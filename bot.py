@@ -269,7 +269,7 @@ query,
 “🎯 *OrchestratorAgent*\n”
 “Синтезирует данные обоих агентов и формирует итоговую “
 “рекомендацию с уровнем уверенности.\n\n”
-“⚡️ PriceAgent и SentimentAgent работают параллельно* “
+“⚡️ PriceAgent и SentimentAgent работают *параллельно* “
 “через asyncio для максимальной скорости.\n\n”
 “🤖 Все агенты работают на базе *Claude* от Anthropic.”,
 reply_markup=back_keyboard(),
@@ -285,7 +285,7 @@ reply_markup=main_keyboard(),
 )
 
 async def error_handler(update, context):
-logger.error(f"Unhandled exception: {context.error}", exc_info=context.error)
+logger.error(f”Unhandled exception: {context.error}”, exc_info=context.error)
 
 def main():
 app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -300,5 +300,5 @@ app.add_error_handler(error_handler)
 logger.info(“Crypto AI Agents Bot started”)
 app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__== “__main__”:
+if __name__ == “__main__”:
 main()
