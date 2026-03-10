@@ -308,4 +308,3 @@ async def market_overview(self, coins):
         f"{items_text}\n\n"
         f"*Analiz:*\n{analysis}"
     )
-```
