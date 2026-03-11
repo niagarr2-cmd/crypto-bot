@@ -159,10 +159,11 @@ async def fetch_fear_greed():
 
 class PriceAgent:
     SYSTEM_PROMPT = (
-        "Ty professionalnyy tekhnicheskiy analitik kriptovalyutnogo rynka. "
-        "Day KRATKIY analiz (3-4 predlozheniya) na russkom yazyke. "
-        "Ukashi: trend, RSI signal, klyuchevyye urovni, vyvod. "
-        "Do NOT use Markdown. Write plain text. Answer entirely in RUSSIAN language."
+        "You are a professional cryptocurrency technical analyst. "
+        "Give a SHORT analysis (3-4 sentences) in RUSSIAN language. "
+        "Mention: trend, RSI signal, key support/resistance levels, conclusion. "
+        "Do NOT use any Markdown formatting. Write plain text only. "
+        "Your entire response MUST be in Russian."
     )
 
     def __init__(self, client):
@@ -215,9 +216,10 @@ class PriceAgent:
 
 class SentimentAgent:
     SYSTEM_PROMPT = (
-        "Ty ekspert po nastroyeniyam kriptovalyutnogo rynka. "
-        "Day KRATKIY analiz (3-4 predlozheniya) na russkom yazyke. "
-        "Do NOT use Markdown. Write plain text. Answer entirely in RUSSIAN language."
+        "You are a cryptocurrency market sentiment expert. "
+        "Give a SHORT analysis (3-4 sentences) in RUSSIAN language. "
+        "Do NOT use any Markdown formatting. Write plain text only. "
+        "Your entire response MUST be in Russian."
     )
 
     def __init__(self, client):
@@ -267,8 +269,8 @@ class SentimentAgent:
                 self.client.messages.create(
                     model=MODEL, max_tokens=MAX_TOKENS,
                     system=(
-                        "Ekspert po kryptorynku. Otvechay po-russki, "
-                        "kratko (3 predlozheniya). Bez Markdown."
+                        "You are a crypto market expert. Answer in RUSSIAN language, "
+                        "briefly (3 sentences). No Markdown. Plain text only."
                     ),
                     messages=[{
                         "role": "user",
@@ -292,14 +294,15 @@ class SentimentAgent:
 
 class OrchestratorAgent:
     SYSTEM_PROMPT = (
-        "Ty glavnyy analitik kriptovalyutnogo fonda. "
-        "Sinteziruy dannyye dvukh analitikov i day itogovuyu rekomendatsiyu.\n"
-        "Response format STRICTLY:\n"
-        "Signal: POKUPAT (buy) / DERZHAT (hold) / PRODAVAT (sell) - write in Russian\n"
-        "Confidence: X%\n"
-        "Key factors: (2-3 points separated by commas)\n"
-        "Risks: (1-2 points separated by commas)\n\n"
-        "Do NOT use Markdown. Write plain text. Answer entirely in RUSSIAN language."
+        "You are the chief analyst of a cryptocurrency fund. "
+        "Synthesize data from two analysts and give a final recommendation.\n"
+        "Response format STRICTLY (in Russian):\n"
+        "Сигнал: ПОКУПАТЬ / ДЕРЖАТЬ / ПРОДАВАТЬ\n"
+        "Уверенность: X%\n"
+        "Ключевые факторы: (2-3 items)\n"
+        "Риски: (1-2 items)\n\n"
+        "Do NOT use any Markdown formatting. Write plain text only. "
+        "Your ENTIRE response MUST be in Russian."
     )
 
     def __init__(self, client):
@@ -355,8 +358,8 @@ class OrchestratorAgent:
                 self.client.messages.create(
                     model=MODEL, max_tokens=MAX_TOKENS,
                     system=(
-                        "Ekspert po kryptorynku. Kratkiy obzor "
-                        "(3-4 predlozheniya) po-russki. Bez Markdown."
+                        "You are a crypto market expert. Give a brief overview "
+                        "(3-4 sentences) in RUSSIAN language. No Markdown. Plain text only."
                     ),
                     messages=[{
                         "role": "user",
