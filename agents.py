@@ -18,16 +18,13 @@ MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", "500"))
 API_TIMEOUT = int(os.getenv("API_TIMEOUT", "45"))
 
-# CoinGecko
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY", "")
 
-# Alternative.me Fear & Greed
 FEAR_GREED_URL = "https://api.alternative.me/fng/"
 
 
 def escape_claude_response(text: str) -> str:
-    """Убираем Markdown из ответов Claude для Telegram."""
     text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
     text = re.sub(r"\*(.*?)\*", r"\1", text)
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
@@ -37,15 +34,7 @@ def escape_claude_response(text: str) -> str:
     return text.strip()
 
 
-# ─────────────────────────────────────────────
-# CoinGecko API
-# ─────────────────────────────────────────────
-
 async def fetch_top_coins(limit: int = 50) -> list[dict]:
-    """
-    Получить топ-N монет по капитализации с CoinGecko.
-    Возвращает список: [{id, symbol, name, current_price, ...}]
-    """
     headers = {}
     if COINGECKO_API_KEY:
         headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
@@ -80,17 +69,12 @@ async def fetch_top_coins(limit: int = 50) -> list[dict]:
 
 
 async def fetch_coin_detail(coin_id: str) -> dict | None:
-    """
-    Детальные данные по монете: RSI, MA — из /coins/{id}.
-    CoinGecko Free не даёт RSI напрямую, считаем из OHLC.
-    """
     headers = {}
     if COINGECKO_API_KEY:
         headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
 
     try:
         async with aiohttp.ClientSession() as session:
-            # OHLC за последние 14 дней для RSI
             async with session.get(
                 f"{COINGECKO_BASE}/coins/{coin_id}/ohlc",
                 params={"vs_currency": "usd", "days": "14"},
@@ -106,12 +90,57 @@ async def fetch_coin_detail(coin_id: str) -> dict | None:
         return None
 
 
+async def fetch_global_market() -> dict:
+    headers = {}
+    if COINGECKO_API_KEY:
+        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{COINGECKO_BASE}/global",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("data", {})
+                else:
+                    logger.warning(f"CoinGecko global status {resp.status}")
+                    return {}
+    except Exception as e:
+        logger.error(f"CoinGecko fetch_global_market error: {e}")
+        return {}
+
+
+async def fetch_trending_coins() -> list[dict]:
+    headers = {}
+    if COINGECKO_API_KEY:
+        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{COINGECKO_BASE}/search/trending",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("coins", [])
+                else:
+                    logger.warning(f"CoinGecko trending status {resp.status}")
+                    return []
+    except Exception as e:
+        logger.error(f"CoinGecko fetch_trending error: {e}")
+        return []
+
+
 def calculate_rsi(ohlc_data: list, period: int = 14) -> float | None:
-    """Расчёт RSI из OHLC данных CoinGecko."""
     if not ohlc_data or len(ohlc_data) < period + 1:
         return None
 
-    closes = [candle[4] for candle in ohlc_data]  # close price
+    closes = [candle[4] for candle in ohlc_data]
 
     gains, losses = [], []
     for i in range(1, len(closes)):
@@ -133,7 +162,6 @@ def calculate_rsi(ohlc_data: list, period: int = 14) -> float | None:
 
 
 async def fetch_fear_greed() -> dict:
-    """Fear & Greed Index от Alternative.me."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -151,20 +179,17 @@ async def fetch_fear_greed() -> dict:
     except Exception as e:
         logger.error(f"Fear&Greed fetch error: {e}")
 
-    # Fallback
     import random
     v = random.randint(30, 70)
     return {"value": v, "label": "Neutral", "is_real": False}
 
 
-# Кэш топ-монет (обновляем раз в 10 минут)
 _coins_cache: list[dict] = []
 _coins_cache_time: float = 0
-COINS_CACHE_TTL = 600  # секунд
+COINS_CACHE_TTL = 600
 
 
 async def get_top_coins_cached(limit: int = 50) -> list[dict]:
-    """Топ монеты с кэшированием."""
     import time
     global _coins_cache, _coins_cache_time
 
@@ -180,7 +205,6 @@ async def get_top_coins_cached(limit: int = 50) -> list[dict]:
 
 
 def find_coin_in_list(symbol: str, coins: list[dict]) -> dict | None:
-    """Найти монету по символу (BTC, ETH, ...)."""
     symbol_upper = symbol.upper()
     for coin in coins:
         if coin.get("symbol", "").upper() == symbol_upper:
@@ -188,12 +212,7 @@ def find_coin_in_list(symbol: str, coins: list[dict]) -> dict | None:
     return None
 
 
-# ─────────────────────────────────────────────
-# Агенты
-# ─────────────────────────────────────────────
-
 class PriceAgent:
-    """Агент технического анализа цены."""
 
     SYSTEM_PROMPT = (
         "Ты профессиональный технический аналитик криптовалютного рынка. "
@@ -218,16 +237,14 @@ class PriceAgent:
             coin_id = coin_data.get("id", coin.lower())
             is_real = True
 
-            # Попробуем получить RSI
             detail = await fetch_coin_detail(coin_id)
             rsi = None
             if detail and detail.get("ohlc"):
                 rsi = calculate_rsi(detail["ohlc"])
             if rsi is None:
-                rsi = 50.0  # нейтральное значение если не удалось
+                rsi = 50.0
 
         else:
-            # Fallback: демо
             import random
             price = 100 * random.uniform(0.95, 1.05)
             change_24h = random.uniform(-5, 5)
@@ -285,7 +302,6 @@ class PriceAgent:
 
 
 class SentimentAgent:
-    """Агент анализа настроений рынка."""
 
     SYSTEM_PROMPT = (
         "Ты эксперт по настроениям криптовалютного рынка. "
@@ -335,7 +351,6 @@ class SentimentAgent:
         }
 
     async def fear_greed_only(self) -> str:
-        """Fear & Greed Index — отдельный запрос."""
         fg_data = await fetch_fear_greed()
         fg = fg_data["value"]
         label_raw = fg_data["label"]
@@ -382,9 +397,44 @@ class SentimentAgent:
             f"{source_note}"
         )
 
+    async def trending_coins(self) -> str:
+        coins = await fetch_trending_coins()
+
+        if not coins:
+            return "❌ Не удалось загрузить trending монеты."
+
+        lines = []
+        for i, item in enumerate(coins[:7], 1):
+            coin = item.get("item", {})
+            name = coin.get("name", "?")
+            symbol = coin.get("symbol", "?").upper()
+            rank = coin.get("market_cap_rank") or "?"
+            lines.append(f"{i}. *{symbol}* — {name} (MCap rank: #{rank})")
+
+        lines_text = "\n".join(lines)
+
+        try:
+            response = await asyncio.wait_for(
+                self.client.messages.create(
+                    model=MODEL,
+                    max_tokens=MAX_TOKENS,
+                    system="Эксперт по крипторынку. Краткий комментарий (2-3 предложения) по-русски. Без Markdown.",
+                    messages=[{
+                        "role": "user",
+                        "content": f"Сейчас в тренде эти монеты:\n{lines_text}\nДай краткий комментарий.",
+                    }],
+                ),
+                timeout=API_TIMEOUT,
+            )
+            comment = escape_claude_response(response.content[0].text)
+        except Exception as e:
+            logger.error(f"Trending comment error: {e}")
+            comment = "Не удалось получить комментарий."
+
+        return f"{lines_text}\n\n💬 *Комментарий:*\n{comment}"
+
 
 class OrchestratorAgent:
-    """Главный агент — синтезирует и даёт рекомендацию."""
 
     SYSTEM_PROMPT = (
         "Ты главный аналитик криптовалютного фонда. "
@@ -436,9 +486,8 @@ class OrchestratorAgent:
         }
 
     async def market_overview(self, coins_data: list[dict]) -> str:
-        """Обзор рынка по реальным данным."""
         items = []
-        for c in coins_data[:10]:  # топ-10 для обзора
+        for c in coins_data[:10]:
             symbol = c.get("symbol", "?").upper()
             price = c.get("current_price", 0)
             change = c.get("price_change_percentage_24h") or 0
@@ -468,3 +517,152 @@ class OrchestratorAgent:
             analysis = "Не удалось получить анализ рынка."
 
         return f"{items_text}\n\n📋 *Анализ:*\n{analysis}"
+
+    async def global_market_summary(self) -> str:
+        data = await fetch_global_market()
+
+        if not data:
+            return "❌ Не удалось загрузить глобальные данные рынка."
+
+        total_mcap = data.get("total_market_cap", {}).get("usd", 0)
+        total_volume = data.get("total_volume", {}).get("usd", 0)
+        btc_dom = data.get("market_cap_percentage", {}).get("btc", 0)
+        eth_dom = data.get("market_cap_percentage", {}).get("eth", 0)
+        active_coins = data.get("active_cryptocurrencies", 0)
+        mcap_change = data.get("market_cap_change_percentage_24h_usd", 0)
+
+        mcap_t = total_mcap / 1e12
+        vol_b = total_volume / 1e9
+        mcap_emoji = "🟢" if mcap_change > 0 else "🔴"
+
+        summary_lines = (
+            f"💰 Общая капитализация: *${mcap_t:.2f}T* {mcap_emoji} ({mcap_change:+.2f}%)\n"
+            f"📊 Объём 24ч: *${vol_b:.1f}B*\n"
+            f"₿ Доминирование BTC: *{btc_dom:.1f}%*\n"
+            f"Ξ Доминирование ETH: *{eth_dom:.1f}%*\n"
+            f"🪙 Активных монет: *{active_coins:,}*"
+        )
+
+        try:
+            response = await asyncio.wait_for(
+                self.client.messages.create(
+                    model=MODEL,
+                    max_tokens=MAX_TOKENS,
+                    system="Эксперт по крипторынку. Краткий анализ (3 предложения) по-русски. Без Markdown.",
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"Глобальный крипторынок:\n"
+                            f"Капитализация: ${mcap_t:.2f}T ({mcap_change:+.2f}% за 24ч)\n"
+                            f"Объём: ${vol_b:.1f}B\n"
+                            f"BTC доминирование: {btc_dom:.1f}%\n"
+                            f"ETH доминирование: {eth_dom:.1f}%\n"
+                            f"Дай краткий анализ ситуации."
+                        ),
+                    }],
+                ),
+                timeout=API_TIMEOUT,
+            )
+            analysis = escape_claude_response(response.content[0].text)
+        except Exception as e:
+            logger.error(f"Global market analysis error: {e}")
+            analysis = "Не удалось получить анализ."
+
+        return f"{summary_lines}\n\n📋 *Анализ:*\n{analysis}"
+
+    async def futures_signals(self, coins: list[dict], direction: str = "long") -> str:
+        direction_ru = "LONG 🟢" if direction == "long" else "SHORT 🔴"
+        condition = "роста" if direction == "long" else "падения"
+
+        candidates = []
+        for c in coins[:20]:
+            symbol = c.get("symbol", "?").upper()
+            price = c.get("current_price", 0)
+            change = c.get("price_change_percentage_24h") or 0
+            volume = (c.get("total_volume") or 0) / 1e6
+            high = c.get("high_24h") or price
+            low = c.get("low_24h") or price
+            candidates.append(
+                f"{symbol}: ${price:,.4f} | 24ч: {change:+.2f}% | Vol: ${volume:.0f}M | H/L: ${high:,.2f}/${low:,.2f}"
+            )
+
+        candidates_text = "\n".join(candidates)
+
+        system_prompt = (
+            f"Ты профессиональный трейдер фьючерсного крипторынка. "
+            f"Выбери топ-3 монеты для {direction_ru} позиций. "
+            f"Для каждой укажи СТРОГО в формате:\n"
+            f"МОНЕТА: символ\n"
+            f"Направление: {direction_ru}\n"
+            f"Вход: $цена\n"
+            f"Стоп-лосс: $цена\n"
+            f"Тейк-профит: $цена\n"
+            f"Уверенность: X%\n"
+            f"Причина: 1 предложение\n\n"
+            f"Без Markdown. Разделяй сигналы линией ---"
+        )
+
+        try:
+            response = await asyncio.wait_for(
+                self.client.messages.create(
+                    model=MODEL,
+                    max_tokens=600,
+                    system=system_prompt,
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"Данные рынка для {direction_ru} сигналов:\n{candidates_text}\n\n"
+                            f"Выбери топ-3 кандидата для {condition}."
+                        ),
+                    }],
+                ),
+                timeout=API_TIMEOUT,
+            )
+            signals = escape_claude_response(response.content[0].text)
+        except asyncio.TimeoutError:
+            signals = "Тайм-аут. Попробуйте позже."
+        except Exception as e:
+            logger.error(f"futures_signals error: {e}")
+            signals = f"Ошибка генерации сигналов: {type(e).__name__}"
+
+        return signals
+
+    async def top_futures(self, coins: list[dict]) -> str:
+        items = []
+        sorted_coins = sorted(
+            coins[:20],
+            key=lambda c: c.get("total_volume") or 0,
+            reverse=True,
+        )
+
+        for i, c in enumerate(sorted_coins[:10], 1):
+            symbol = c.get("symbol", "?").upper()
+            price = c.get("current_price", 0)
+            change = c.get("price_change_percentage_24h") or 0
+            volume = (c.get("total_volume") or 0) / 1e6
+            emoji = "🟢" if change > 0 else "🔴"
+            items.append(
+                f"{i}. {emoji} *{symbol}*: ${price:,.2f} ({change:+.2f}%) | Vol: ${volume:.0f}M"
+            )
+
+        items_text = "\n".join(items)
+
+        try:
+            response = await asyncio.wait_for(
+                self.client.messages.create(
+                    model=MODEL,
+                    max_tokens=MAX_TOKENS,
+                    system="Эксперт по фьючерсному крипторынку. Краткий комментарий (2-3 предложения) по-русски. Без Markdown.",
+                    messages=[{
+                        "role": "user",
+                        "content": f"Топ монеты по объёму торгов:\n{items_text}\nДай краткий комментарий по фьючерсному рынку.",
+                    }],
+                ),
+                timeout=API_TIMEOUT,
+            )
+            comment = escape_claude_response(response.content[0].text)
+        except Exception as e:
+            logger.error(f"top_futures error: {e}")
+            comment = "Не удалось получить комментарий."
+
+        return f"{items_text}\n\n💬 *Комментарий:*\n{comment}"
