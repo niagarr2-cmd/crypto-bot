@@ -1,10 +1,11 @@
-# Crypto AI Agents v3 - Real data, top-50 coins, detailed analysis
+# Crypto AI Agents v4 - Caching, retry, rate limit protection
 # CoinGecko + Alternative.me - all free APIs
 
 import asyncio
 import re
 import os
 import logging
+import time
 import aiohttp
 from datetime import datetime
 from anthropic import AsyncAnthropic
@@ -14,6 +15,37 @@ logger = logging.getLogger("agents")
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", "1500"))
 API_TIMEOUT = int(os.getenv("API_TIMEOUT", "60"))
+
+# Global cache for all API data
+_cache = {}
+CACHE_TTL_PRICE = 180  # 3 min for price data
+CACHE_TTL_SENTIMENT = 300  # 5 min for sentiment
+CACHE_TTL_GLOBAL = 300  # 5 min for global
+CACHE_TTL_TRENDING = 300  # 5 min for trending
+CACHE_TTL_COINS = 300  # 5 min for coins list
+
+
+def cache_get(key):
+    if key in _cache:
+        data, ts = _cache[key]
+        return data
+    return None
+
+
+def cache_set(key, data, ttl):
+    _cache[key] = (data, time.time() + ttl)
+    # cleanup old entries
+    now = time.time()
+    expired = [k for k, (d, t) in _cache.items() if t < now]
+    for k in expired:
+        del _cache[k]
+
+
+def cache_valid(key):
+    if key in _cache:
+        data, ts = _cache[key]
+        return time.time() < ts
+    return False
 
 
 def escape_claude_response(text):
@@ -40,7 +72,32 @@ def compute_rsi(prices, period=14):
     return round(rsi, 1)
 
 
+async def _api_get(session, url, retries=3):
+    for attempt in range(retries):
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                elif resp.status == 429:
+                    wait = 5 * (attempt + 1)
+                    logger.warning(f"CoinGecko rate limit, waiting {wait}s")
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error(f"API error {resp.status} for {url}")
+                    return None
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout attempt {attempt+1} for {url}")
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"API error: {e}")
+            return None
+    return None
+
+
 async def fetch_top_coins(limit=50):
+    cache_key = f"top_coins_{limit}"
+    if cache_valid(cache_key):
+        return cache_get(cache_key)
     try:
         async with aiohttp.ClientSession() as session:
             url = (
@@ -49,37 +106,38 @@ async def fetch_top_coins(limit=50):
                 f"&per_page={limit}&page=1&sparkline=false"
                 f"&price_change_percentage=1h,24h,7d"
             )
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status != 200:
-                    return []
-                data = await resp.json()
-                result = []
-                for coin in data:
-                    result.append({
-                        "id": coin.get("id", ""),
-                        "symbol": coin.get("symbol", "").upper(),
-                        "name": coin.get("name", ""),
-                        "price": coin.get("current_price", 0),
-                        "market_cap": coin.get("market_cap", 0),
-                        "volume": coin.get("total_volume", 0),
-                        "change_1h": coin.get("price_change_percentage_1h_in_currency", 0) or 0,
-                        "change_24h": coin.get("price_change_percentage_24h", 0) or 0,
-                        "change_7d": coin.get("price_change_percentage_7d_in_currency", 0) or 0,
-                        "market_cap_rank": coin.get("market_cap_rank", 0),
-                    })
-                return result
+            data = await _api_get(session, url)
+            if not data:
+                cached = cache_get(cache_key)
+                return cached if cached else []
+            result = []
+            for coin in data:
+                result.append({
+                    "id": coin.get("id", ""),
+                    "symbol": coin.get("symbol", "").upper(),
+                    "name": coin.get("name", ""),
+                    "price": coin.get("current_price", 0) or 0,
+                    "market_cap": coin.get("market_cap", 0) or 0,
+                    "volume": coin.get("total_volume", 0) or 0,
+                    "change_1h": coin.get("price_change_percentage_1h_in_currency", 0) or 0,
+                    "change_24h": coin.get("price_change_percentage_24h", 0) or 0,
+                    "change_7d": coin.get("price_change_percentage_7d_in_currency", 0) or 0,
+                    "market_cap_rank": coin.get("market_cap_rank", 0),
+                })
+            cache_set(cache_key, result, CACHE_TTL_COINS)
+            return result
     except Exception as e:
         logger.error(f"fetch_top_coins error: {e}")
-        return []
-
-
-async def fetch_coin_id_map():
-    coins = await fetch_top_coins(50)
-    return {c["symbol"]: c["id"] for c in coins}
+        cached = cache_get(cache_key)
+        return cached if cached else []
 
 
 async def fetch_price_data(coin_symbol, coin_id=None):
-    if not coin_id:
+    cache_key = f"price_{coin_symbol}_{coin_id}"
+    if cache_valid(cache_key):
+        return cache_get(cache_key)
+
+    if not coin_id or coin_id == "" or coin_id == "None":
         known = {
             "BTC": "bitcoin", "ETH": "ethereum", "BNB": "binancecoin",
             "SOL": "solana", "XRP": "ripple", "ADA": "cardano",
@@ -94,13 +152,21 @@ async def fetch_price_data(coin_symbol, coin_id=None):
             "HBAR": "hedera-hashgraph", "VET": "vechain",
             "ALGO": "algorand", "FTM": "fantom", "AAVE": "aave",
             "MKR": "maker", "GRT": "the-graph", "RENDER": "render-token",
-            "IMX": "immutable-x", "STX": "blockstack", "EGLD": "elrond-erd-2",
-            "SAND": "the-sandbox", "MANA": "decentraland", "AXS": "axie-infinity",
+            "IMX": "immutable-x", "STX": "blockstack",
+            "SAND": "the-sandbox", "MANA": "decentraland",
             "CRV": "curve-dao-token", "LDO": "lido-dao", "RUNE": "thorchain",
-            "ENS": "ethereum-name-service", "COMP": "compound-governance-token",
-            "SNX": "havven", "1INCH": "1inch", "GALA": "gala",
+            "GALA": "gala", "HYPE": "hyperliquid",
         }
-        coin_id = known.get(coin_symbol, coin_symbol.lower())
+        coin_id = known.get(coin_symbol, None)
+        if not coin_id:
+            coins = await fetch_top_coins(50)
+            for c in coins:
+                if c["symbol"] == coin_symbol:
+                    coin_id = c["id"]
+                    break
+            if not coin_id:
+                coin_id = coin_symbol.lower()
+
     try:
         async with aiohttp.ClientSession() as session:
             url = (
@@ -108,13 +174,13 @@ async def fetch_price_data(coin_symbol, coin_id=None):
                 f"?localization=false&tickers=false"
                 f"&community_data=true&developer_data=true"
             )
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
+            data = await _api_get(session, url)
+            if not data:
+                cached = cache_get(cache_key)
+                return cached
 
             md = data.get("market_data", {})
-            price = md.get("current_price", {}).get("usd", 0)
+            price = md.get("current_price", {}).get("usd", 0) or 0
             change_1h = md.get("price_change_percentage_1h_in_currency", {}).get("usd", 0) or 0
             change_24h = md.get("price_change_percentage_24h", 0) or 0
             change_7d = md.get("price_change_percentage_7d", 0) or 0
@@ -125,23 +191,21 @@ async def fetch_price_data(coin_symbol, coin_id=None):
             ath_change = md.get("ath_change_percentage", {}).get("usd", 0) or 0
             high_24h = md.get("high_24h", {}).get("usd", 0) or 0
             low_24h = md.get("low_24h", {}).get("usd", 0) or 0
-
-            community = data.get("community_data", {})
             sentiment_up = data.get("sentiment_votes_up_percentage", 0) or 0
             sentiment_down = data.get("sentiment_votes_down_percentage", 0) or 0
             community_score = data.get("community_score", 0) or 0
             developer_score = data.get("developer_score", 0) or 0
 
+            await asyncio.sleep(1.5)
+
             url_hist = (
                 f"https://api.coingecko.com/api/v3/coins/{coin_id}"
                 f"/market_chart?vs_currency=usd&days=200&interval=daily"
             )
-            async with session.get(url_hist, timeout=aiohttp.ClientTimeout(total=15)) as resp2:
-                if resp2.status == 200:
-                    hist = await resp2.json()
-                    hist_prices = [p[1] for p in hist.get("prices", [])]
-                else:
-                    hist_prices = []
+            hist_data = await _api_get(session, url_hist)
+            hist_prices = []
+            if hist_data:
+                hist_prices = [p[1] for p in hist_data.get("prices", [])]
 
             rsi = compute_rsi(hist_prices) if len(hist_prices) > 14 else 50.0
             ma_7 = round(sum(hist_prices[-7:]) / max(len(hist_prices[-7:]), 1), 2) if hist_prices else price
@@ -150,7 +214,7 @@ async def fetch_price_data(coin_symbol, coin_id=None):
             ma_99 = round(sum(hist_prices[-99:]) / max(len(hist_prices[-99:]), 1), 2) if hist_prices else price
             ma_200 = round(sum(hist_prices[-200:]) / max(len(hist_prices[-200:]), 1), 2) if hist_prices else price
 
-            return {
+            result = {
                 "coin": coin_symbol, "coin_id": coin_id, "price": round(price, 6),
                 "change_1h": round(change_1h, 2), "change_24h": round(change_24h, 2),
                 "change_7d": round(change_7d, 2), "change_30d": round(change_30d, 2),
@@ -163,87 +227,109 @@ async def fetch_price_data(coin_symbol, coin_id=None):
                 "community_score": community_score, "developer_score": developer_score,
                 "timestamp": datetime.now().isoformat(), "is_demo": False,
             }
+            cache_set(cache_key, result, CACHE_TTL_PRICE)
+            return result
     except Exception as e:
         logger.error(f"fetch_price_data error for {coin_symbol}: {e}")
-        return None
+        cached = cache_get(cache_key)
+        return cached
 
 
 async def fetch_sentiment_data(coin_symbol):
+    cache_key = f"sentiment_{coin_symbol}"
+    if cache_valid(cache_key):
+        return cache_get(cache_key)
     try:
         async with aiohttp.ClientSession() as session:
             url_fg = "https://api.alternative.me/fng/?limit=1"
-            async with session.get(url_fg, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    fg_data = await resp.json()
-                    fg_entry = fg_data.get("data", [{}])[0]
-                    fg_value = int(fg_entry.get("value", 50))
-                    fg_label = fg_entry.get("value_classification", "Neutral")
-                else:
-                    fg_value, fg_label = 50, "Neutral"
-            return {"fear_greed_index": fg_value, "fear_greed_label": fg_label}
+            data = await _api_get(session, url_fg)
+            if data:
+                fg_entry = data.get("data", [{}])[0]
+                fg_value = int(fg_entry.get("value", 50))
+                fg_label = fg_entry.get("value_classification", "Neutral")
+            else:
+                fg_value, fg_label = 50, "Neutral"
+            result = {"fear_greed_index": fg_value, "fear_greed_label": fg_label}
+            cache_set(cache_key, result, CACHE_TTL_SENTIMENT)
+            return result
     except Exception as e:
         logger.error(f"fetch_sentiment_data error: {e}")
         return {"fear_greed_index": 50, "fear_greed_label": "Neutral"}
 
 
 async def fetch_fear_greed():
+    cache_key = "fear_greed"
+    if cache_valid(cache_key):
+        d = cache_get(cache_key)
+        return d[0], d[1]
     try:
         async with aiohttp.ClientSession() as session:
             url = "https://api.alternative.me/fng/?limit=1"
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    return 50, "Neutral"
-                data = await resp.json()
-                entry = data.get("data", [{}])[0]
-                return int(entry.get("value", 50)), entry.get("value_classification", "Neutral")
+            data = await _api_get(session, url)
+            if not data:
+                return 50, "Neutral"
+            entry = data.get("data", [{}])[0]
+            fg = int(entry.get("value", 50))
+            label = entry.get("value_classification", "Neutral")
+            cache_set(cache_key, (fg, label), CACHE_TTL_SENTIMENT)
+            return fg, label
     except:
         return 50, "Neutral"
 
 
 async def fetch_trending():
+    cache_key = "trending"
+    if cache_valid(cache_key):
+        return cache_get(cache_key)
     try:
         async with aiohttp.ClientSession() as session:
             url = "https://api.coingecko.com/api/v3/search/trending"
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    return []
-                data = await resp.json()
-                coins = data.get("coins", [])
-                result = []
-                for item in coins[:10]:
-                    c = item.get("item", {})
-                    result.append({
-                        "name": c.get("name", ""),
-                        "symbol": c.get("symbol", "").upper(),
-                        "market_cap_rank": c.get("market_cap_rank", 0),
-                        "price_btc": c.get("price_btc", 0),
-                    })
-                return result
+            data = await _api_get(session, url)
+            if not data:
+                cached = cache_get(cache_key)
+                return cached if cached else []
+            coins = data.get("coins", [])
+            result = []
+            for item in coins[:10]:
+                c = item.get("item", {})
+                result.append({
+                    "name": c.get("name", ""),
+                    "symbol": c.get("symbol", "").upper(),
+                    "market_cap_rank": c.get("market_cap_rank", 0),
+                    "id": c.get("id", ""),
+                })
+            cache_set(cache_key, result, CACHE_TTL_TRENDING)
+            return result
     except Exception as e:
         logger.error(f"fetch_trending error: {e}")
-        return []
+        cached = cache_get(cache_key)
+        return cached if cached else []
 
 
 async def fetch_global_data():
+    cache_key = "global_data"
+    if cache_valid(cache_key):
+        return cache_get(cache_key)
     try:
         async with aiohttp.ClientSession() as session:
             url = "https://api.coingecko.com/api/v3/global"
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    return None
-                raw = await resp.json()
-                data = raw.get("data", {})
-                return {
-                    "total_market_cap": round(data.get("total_market_cap", {}).get("usd", 0) / 1e12, 2),
-                    "total_volume": round(data.get("total_volume", {}).get("usd", 0) / 1e9, 1),
-                    "btc_dominance": round(data.get("market_cap_percentage", {}).get("btc", 0), 1),
-                    "eth_dominance": round(data.get("market_cap_percentage", {}).get("eth", 0), 1),
-                    "active_coins": data.get("active_cryptocurrencies", 0),
-                    "market_cap_change_24h": round(data.get("market_cap_change_percentage_24h_usd", 0), 2),
-                }
+            raw = await _api_get(session, url)
+            if not raw:
+                return cache_get(cache_key)
+            data = raw.get("data", {})
+            result = {
+                "total_market_cap": round(data.get("total_market_cap", {}).get("usd", 0) / 1e12, 2),
+                "total_volume": round(data.get("total_volume", {}).get("usd", 0) / 1e9, 1),
+                "btc_dominance": round(data.get("market_cap_percentage", {}).get("btc", 0), 1),
+                "eth_dominance": round(data.get("market_cap_percentage", {}).get("eth", 0), 1),
+                "active_coins": data.get("active_cryptocurrencies", 0),
+                "market_cap_change_24h": round(data.get("market_cap_change_percentage_24h_usd", 0), 2),
+            }
+            cache_set(cache_key, result, CACHE_TTL_GLOBAL)
+            return result
     except Exception as e:
         logger.error(f"fetch_global_data error: {e}")
-        return None
+        return cache_get(cache_key)
 
 
 class PriceAgent:
@@ -269,7 +355,7 @@ class PriceAgent:
         if data is None:
             return {
                 "agent": "PriceAgent", "coin": coin,
-                "raw_data": {}, "summary": "Не удалось получить данные.",
+                "raw_data": {}, "summary": "Не удалось получить данные. Попробуйте через минуту.",
                 "trend": "unknown", "rsi": 50, "rsi_signal": "unknown",
             }
         trend = "бычий" if data["change_24h"] > 2 else "медвежий" if data["change_24h"] < -2 else "боковой"
@@ -288,13 +374,11 @@ class PriceAgent:
             f"Лоу 24ч: ${data['low_24h']:,.6f}\n"
             f"ATH: ${data['ath']:,.2f} ({data['ath_change']:+.1f}% от ATH)\n"
             f"RSI(14): {data['rsi']} ({rsi_signal})\n"
-            f"MA7: ${data['ma_7']:,.2f}\n"
-            f"MA25: ${data['ma_25']:,.2f}\n"
-            f"MA50: ${data['ma_50']:,.2f}\n"
-            f"MA99: ${data['ma_99']:,.2f}\n"
+            f"MA7: ${data['ma_7']:,.2f} | MA25: ${data['ma_25']:,.2f}\n"
+            f"MA50: ${data['ma_50']:,.2f} | MA99: ${data['ma_99']:,.2f}\n"
             f"MA200: ${data['ma_200']:,.2f}\n"
             f"Тренд: {trend}\n"
-            f"Настроения сообщества: {data['sentiment_up']}% позитив / {data['sentiment_down']}% негатив"
+            f"Настроения: {data['sentiment_up']}% позитив / {data['sentiment_down']}% негатив"
         )
         try:
             response = await asyncio.wait_for(
@@ -338,8 +422,9 @@ class SentimentAgent:
         if price_data is None:
             return {
                 "agent": "SentimentAgent", "coin": coin,
-                "raw_data": {}, "summary": "Не удалось получить данные.",
-                "fear_greed": 50, "fear_greed_label": "Neutral",
+                "raw_data": {}, "summary": "Не удалось получить данные. Попробуйте через минуту.",
+                "fear_greed": sentiment["fear_greed_index"],
+                "fear_greed_label": sentiment["fear_greed_label"],
             }
         user_msg = (
             f"Монета: {coin}\n"
@@ -388,8 +473,7 @@ class SentimentAgent:
                     messages=[{
                         "role": "user",
                         "content": f"Fear & Greed Index: {fg}/100 ({label}). "
-                                   f"Объясни что это значит для рынка, какие исторические "
-                                   f"параллели, и что делать инвесторам.",
+                                   f"Объясни что это значит для рынка.",
                     }],
                 ),
                 timeout=API_TIMEOUT,
@@ -475,11 +559,10 @@ class OrchestratorAgent:
         global_text = ""
         if global_data:
             global_text = (
-                f"\nОбщая капитализация: ${global_data['total_market_cap']}T\n"
+                f"\nКапитализация: ${global_data['total_market_cap']}T\n"
                 f"Объём 24ч: ${global_data['total_volume']}B\n"
-                f"Доминация BTC: {global_data['btc_dominance']}%\n"
-                f"Доминация ETH: {global_data['eth_dominance']}%\n"
-                f"Изменение капитализации 24ч: {global_data['market_cap_change_24h']:+.2f}%"
+                f"BTC: {global_data['btc_dominance']}% | ETH: {global_data['eth_dominance']}%\n"
+                f"Изменение 24ч: {global_data['market_cap_change_24h']:+.2f}%"
             )
         try:
             response = await asyncio.wait_for(
@@ -489,16 +572,13 @@ class OrchestratorAgent:
                         "IMPORTANT: Reply ONLY in Russian using Cyrillic alphabet. "
                         "Never use Latin/transliteration. "
                         "You are a crypto market expert. "
-                        "Give detailed overview (5-7 sentences) with specific "
-                        "recommendations. No Markdown."
+                        "Give detailed overview (5-7 sentences) with recommendations. No Markdown."
                     ),
                     messages=[{
                         "role": "user",
-                        "content": f"Рынок сегодня:\n{items_text}\n"
-                                   f"{global_text}\n"
+                        "content": f"Рынок сегодня:\n{items_text}\n{global_text}\n"
                                    f"Fear & Greed: {fg}/100 ({fg_label})\n"
-                                   f"Какие монеты сейчас наиболее интересны для "
-                                   f"краткосрочной и среднесрочной торговли?",
+                                   f"Какие монеты интересны для торговли?",
                     }],
                 ),
                 timeout=API_TIMEOUT,

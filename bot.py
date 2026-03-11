@@ -1,10 +1,13 @@
-# Crypto AI Agents Bot v3 - Top 50 coins, detailed analysis, trending, global data
+# Crypto AI Agents Bot v4 - Subscription system + caching
+# 1 free analysis per day, VIP = unlimited
+# Admin can add/remove VIP users
 
 import os
 import time
 import logging
 import asyncio
-from datetime import datetime
+import json
+from datetime import datetime, date
 from collections import defaultdict
 
 from anthropic import AsyncAnthropic
@@ -29,13 +32,69 @@ logger = logging.getLogger("bot")
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 
 client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "30"))
+FREE_ANALYSES_PER_DAY = int(os.getenv("FREE_ANALYSES_PER_DAY", "1"))
+
 user_last_request = defaultdict(float)
 coins_cache = {"data": [], "updated": 0}
 CACHE_TTL = 300
+
+# Subscription data (in-memory, resets on restart)
+# For production: use Redis or database
+vip_users = set()
+user_daily_usage = {}  # {user_id: {"date": "2026-03-11", "count": 0}}
+
+VIP_FILE = "/tmp/vip_users.json"
+
+
+def load_vip():
+    global vip_users
+    try:
+        with open(VIP_FILE, "r") as f:
+            vip_users = set(json.load(f))
+            logger.info(f"Loaded {len(vip_users)} VIP users")
+    except:
+        vip_users = set()
+
+
+def save_vip():
+    try:
+        with open(VIP_FILE, "w") as f:
+            json.dump(list(vip_users), f)
+    except Exception as e:
+        logger.error(f"Failed to save VIP: {e}")
+
+
+def is_vip(user_id):
+    return user_id in vip_users or user_id in ADMIN_IDS
+
+
+def check_daily_limit(user_id):
+    if is_vip(user_id):
+        return True, 0
+    today = date.today().isoformat()
+    usage = user_daily_usage.get(user_id, {"date": "", "count": 0})
+    if usage["date"] != today:
+        usage = {"date": today, "count": 0}
+        user_daily_usage[user_id] = usage
+    if usage["count"] >= FREE_ANALYSES_PER_DAY:
+        return False, FREE_ANALYSES_PER_DAY - usage["count"]
+    return True, FREE_ANALYSES_PER_DAY - usage["count"]
+
+
+def use_analysis(user_id):
+    if is_vip(user_id):
+        return
+    today = date.today().isoformat()
+    usage = user_daily_usage.get(user_id, {"date": "", "count": 0})
+    if usage["date"] != today:
+        usage = {"date": today, "count": 0}
+    usage["count"] += 1
+    user_daily_usage[user_id] = usage
 
 
 def check_rate_limit(user_id):
@@ -64,6 +123,7 @@ def main_keyboard():
         [InlineKeyboardButton("🔥 Trending сейчас", callback_data="trending")],
         [InlineKeyboardButton("😱 Fear & Greed", callback_data="fear_greed")],
         [InlineKeyboardButton("📈 Глобальный рынок", callback_data="global_data")],
+        [InlineKeyboardButton("👤 Мой аккаунт", callback_data="my_account")],
         [InlineKeyboardButton("ℹ️ Об агентах", callback_data="about")],
     ])
 
@@ -74,11 +134,18 @@ def back_keyboard(callback="back_main"):
     ])
 
 
+def subscribe_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💎 Оформить VIP подписку", callback_data="subscribe")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
+    ])
+
+
 async def safe_edit_message(query, text, parse_mode="Markdown", reply_markup=None):
     try:
         await query.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
     except Exception as e:
-        logger.warning(f"Markdown error, fallback: {e}")
+        logger.warning(f"Markdown error: {e}")
         clean = text.replace("*", "").replace("_", "").replace("`", "")
         try:
             await query.edit_message_text(clean, reply_markup=reply_markup)
@@ -87,18 +154,96 @@ async def safe_edit_message(query, text, parse_mode="Markdown", reply_markup=Non
 
 
 async def start(update, context):
+    user_id = update.effective_user.id
+    vip_badge = " 💎 VIP" if is_vip(user_id) else ""
+    allowed, remaining = check_daily_limit(user_id)
+    limit_info = "Безлимитный доступ" if is_vip(user_id) else f"Бесплатных анализов сегодня: {remaining}"
+
     await update.message.reply_text(
-        "🤖 *Crypto AI Agents Bot v3*\n\n"
-        "Система AI-агентов на базе Claude:\n"
-        "• 📈 *PriceAgent* — технический анализ\n"
-        "• 🧠 *SentimentAgent* — настроения рынка\n"
-        "• 🎯 *OrchestratorAgent* — рекомендации\n\n"
-        "📡 Реальные данные CoinGecko\n"
-        "🪙 Топ-50 монет по капитализации\n"
-        "⚡ Фьючерсы, таймфреймы, точки входа\n\n"
-        "Выберите действие:",
+        f"🤖 *Crypto AI Agents Bot v4*{vip_badge}\n\n"
+        f"Система AI-агентов на базе Claude:\n"
+        f"• 📈 *PriceAgent* — технический анализ\n"
+        f"• 🧠 *SentimentAgent* — настроения рынка\n"
+        f"• 🎯 *OrchestratorAgent* — рекомендации\n\n"
+        f"📡 Реальные данные CoinGecko\n"
+        f"🪙 Топ-50 монет по капитализации\n"
+        f"⚡ Фьючерсы, таймфреймы, точки входа\n\n"
+        f"📊 {limit_info}\n\n"
+        f"Выберите действие:",
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
+    )
+
+
+async def my_account(update, context):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    username = query.from_user.username or "нет"
+    is_v = is_vip(user_id)
+    allowed, remaining = check_daily_limit(user_id)
+    today_usage = user_daily_usage.get(user_id, {"date": "", "count": 0})
+    used_today = today_usage["count"] if today_usage["date"] == date.today().isoformat() else 0
+
+    status = "💎 VIP (безлимитный доступ)" if is_v else "🆓 Бесплатный план"
+    text = (
+        f"👤 *Мой аккаунт*\n\n"
+        f"ID: `{user_id}`\n"
+        f"Username: @{username}\n"
+        f"Статус: {status}\n\n"
+    )
+    if not is_v:
+        text += (
+            f"📊 Использовано сегодня: {used_today}/{FREE_ANALYSES_PER_DAY}\n"
+            f"📊 Осталось: {max(0, remaining)}\n\n"
+            f"💎 *VIP подписка — $5/мес*\n"
+            f"Безлимитные анализы всех монет\n"
+        )
+
+    buttons = []
+    if not is_v:
+        buttons.append([InlineKeyboardButton("💎 Оформить VIP", callback_data="subscribe")])
+    buttons.append([InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")])
+
+    await safe_edit_message(query, text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def subscribe(update, context):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    text = (
+        f"💎 *VIP Подписка — $5/мес*\n\n"
+        f"Что входит:\n"
+        f"• Безлимитные анализы всех монет\n"
+        f"• Детальные рекомендации по таймфреймам\n"
+        f"• Фьючерсные сигналы с точками входа\n"
+        f"• Приоритетная скорость анализа\n\n"
+        f"Способы оплаты:\n\n"
+        f"💰 *USDT (TRC-20):*\n"
+        f"`Адрес будет указан после настройки`\n\n"
+        f"💎 *TON:*\n"
+        f"`Адрес будет указан после настройки`\n\n"
+        f"После оплаты отправьте скриншот или хэш транзакции "
+        f"администратору и ваш ID: `{user_id}`\n\n"
+        f"Или напишите /support для связи с админом."
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📞 Связаться с админом", callback_data="contact_admin")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
+    ])
+    await safe_edit_message(query, text, reply_markup=keyboard)
+
+
+async def contact_admin(update, context):
+    query = update.callback_query
+    await query.answer()
+    await safe_edit_message(
+        query,
+        "📞 Для оформления VIP подписки напишите администратору.\n\n"
+        "Укажите ваш ID при обращении.",
+        reply_markup=back_keyboard(),
     )
 
 
@@ -108,7 +253,7 @@ async def coins_page(update, context):
     page = int(query.data.split("_")[-1])
     coins = await get_coins()
     if not coins:
-        await safe_edit_message(query, "Не удалось загрузить список монет.", reply_markup=back_keyboard())
+        await safe_edit_message(query, "Не удалось загрузить. Попробуйте через минуту.", reply_markup=back_keyboard())
         return
     per_page = 15
     start_idx = page * per_page
@@ -132,17 +277,22 @@ async def coins_page(update, context):
 
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"coins_page_{page-1}"))
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"coins_page_{page-1}"))
     if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("➡️ Далее", callback_data=f"coins_page_{page+1}"))
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"coins_page_{page+1}"))
     if nav:
         buttons.append(nav)
     buttons.append([InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")])
 
+    user_id = query.from_user.id
+    vip_badge = " 💎" if is_vip(user_id) else ""
+    allowed, remaining = check_daily_limit(user_id)
+    limit_text = "" if is_vip(user_id) else f"\n📊 Бесплатных анализов: {remaining}"
+
     await safe_edit_message(
         query,
-        f"🪙 *Топ-50 монет* (стр. {page+1}/{total_pages})\n"
-        f"🟢 рост / 🔴 падение за 24ч\n\nВыберите монету:",
+        f"🪙 *Топ-50 монет{vip_badge}* (стр. {page+1}/{total_pages})\n"
+        f"🟢 рост / 🔴 падение за 24ч{limit_text}\n\nВыберите монету:",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
@@ -153,12 +303,26 @@ async def analyze_coin(update, context):
     user_id = query.from_user.id
     parts = query.data.split("_")
     coin = parts[1]
-    coin_id = parts[2] if len(parts) > 2 else None
+    coin_id = parts[2] if len(parts) > 2 and parts[2] else None
 
-    allowed, wait_seconds = check_rate_limit(user_id)
+    # Check daily limit
+    allowed, remaining = check_daily_limit(user_id)
     if not allowed:
         await safe_edit_message(
-            query, f"⏱ Подождите {wait_seconds} сек.",
+            query,
+            f"🔒 *Лимит исчерпан*\n\n"
+            f"Вы использовали {FREE_ANALYSES_PER_DAY} бесплатный анализ сегодня.\n\n"
+            f"💎 Оформите VIP подписку за $5/мес для безлимитного доступа\n"
+            f"или подождите до завтра.",
+            reply_markup=subscribe_keyboard(),
+        )
+        return
+
+    # Rate limit
+    rate_ok, wait = check_rate_limit(user_id)
+    if not rate_ok:
+        await safe_edit_message(
+            query, f"⏱ Подождите {wait} сек.",
             reply_markup=back_keyboard("coins_page_0"),
         )
         return
@@ -176,10 +340,14 @@ async def analyze_coin(update, context):
             SentimentAgent(client).analyze(coin, coin_id),
         )
         final = await OrchestratorAgent(client).synthesize(coin, price_data, sentiment_data)
+
+        # Count usage AFTER successful analysis
+        use_analysis(user_id)
+
         timestamp = datetime.now().strftime("%H:%M %d.%m.%Y")
         raw = price_data.get("raw_data", {})
         price_line = ""
-        if raw:
+        if raw and raw.get("price", 0) > 0:
             price_line = (
                 f"💰 ${raw.get('price', 0):,.6f} "
                 f"({raw.get('change_24h', 0):+.2f}% 24ч)\n"
@@ -204,7 +372,7 @@ async def analyze_coin(update, context):
     except Exception as e:
         logger.error(f"analyze error {coin}: {e}", exc_info=True)
         await safe_edit_message(
-            query, f"Ошибка анализа {coin}. Попробуйте позже.",
+            query, f"Ошибка анализа {coin}. Попробуйте через минуту.",
             reply_markup=back_keyboard("coins_page_0"),
         )
 
@@ -213,8 +381,8 @@ async def market_overview(update, context):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    allowed, wait = check_rate_limit(user_id)
-    if not allowed:
+    rate_ok, wait = check_rate_limit(user_id)
+    if not rate_ok:
         await safe_edit_message(query, f"⏱ Подождите {wait} сек.", reply_markup=back_keyboard())
         return
     await safe_edit_message(query, "⏳ Загрузка обзора рынка...")
@@ -234,7 +402,7 @@ async def market_overview(update, context):
         )
     except Exception as e:
         logger.error(f"market_overview error: {e}", exc_info=True)
-        await safe_edit_message(query, "Ошибка загрузки обзора.", reply_markup=back_keyboard())
+        await safe_edit_message(query, "Ошибка. Попробуйте через минуту.", reply_markup=back_keyboard())
 
 
 async def trending(update, context):
@@ -244,27 +412,28 @@ async def trending(update, context):
     try:
         coins = await fetch_trending()
         if not coins:
-            await safe_edit_message(query, "Не удалось загрузить тренды.", reply_markup=back_keyboard())
+            await safe_edit_message(query, "Не удалось загрузить.", reply_markup=back_keyboard())
             return
         lines = []
         for i, c in enumerate(coins, 1):
-            rank = f"#{c['market_cap_rank']}" if c['market_cap_rank'] else "new"
+            rank = f"#{c['market_cap_rank']}" if c.get('market_cap_rank') else "new"
             lines.append(f"{i}. *{c['symbol']}* ({c['name']}) — {rank}")
         buttons = []
         for c in coins[:6]:
+            cid = c.get("id", "")
             buttons.append([InlineKeyboardButton(
-                f"📊 Анализ {c['symbol']}", callback_data=f"analyze_{c['symbol']}_"
+                f"📊 Анализ {c['symbol']}", callback_data=f"analyze_{c['symbol']}_{cid}"
             )])
         buttons.append([InlineKeyboardButton("🔄 Обновить", callback_data="trending")])
         buttons.append([InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")])
         await safe_edit_message(
             query,
-            f"🔥 *Trending сейчас*\n\n" + "\n".join(lines) + "\n\n📡 _CoinGecko Trending_",
+            f"🔥 *Trending сейчас*\n\n" + "\n".join(lines) + "\n\n📡 _CoinGecko_",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
     except Exception as e:
         logger.error(f"trending error: {e}", exc_info=True)
-        await safe_edit_message(query, "Ошибка загрузки трендов.", reply_markup=back_keyboard())
+        await safe_edit_message(query, "Ошибка.", reply_markup=back_keyboard())
 
 
 async def global_data(update, context):
@@ -282,8 +451,8 @@ async def global_data(update, context):
             f"💰 Капитализация: *${data['total_market_cap']}T*\n"
             f"📊 Объём 24ч: *${data['total_volume']}B*\n"
             f"📈 Изменение 24ч: *{data['market_cap_change_24h']:+.2f}%*\n\n"
-            f"🟡 Доминация BTC: *{data['btc_dominance']}%*\n"
-            f"🔵 Доминация ETH: *{data['eth_dominance']}%*\n\n"
+            f"🟡 BTC: *{data['btc_dominance']}%*\n"
+            f"🔵 ETH: *{data['eth_dominance']}%*\n\n"
             f"😱 Fear & Greed: *{fg}/100 ({fg_label})*\n"
             f"🪙 Активных монет: *{data['active_coins']:,}*\n\n"
             f"📡 _CoinGecko + Alternative.me_"
@@ -295,15 +464,15 @@ async def global_data(update, context):
         await safe_edit_message(query, text, reply_markup=keyboard)
     except Exception as e:
         logger.error(f"global_data error: {e}", exc_info=True)
-        await safe_edit_message(query, "Ошибка загрузки.", reply_markup=back_keyboard())
+        await safe_edit_message(query, "Ошибка.", reply_markup=back_keyboard())
 
 
 async def fear_greed(update, context):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    allowed, wait = check_rate_limit(user_id)
-    if not allowed:
+    rate_ok, wait = check_rate_limit(user_id)
+    if not rate_ok:
         await safe_edit_message(query, f"⏱ Подождите {wait} сек.", reply_markup=back_keyboard())
         return
     await safe_edit_message(query, "⏳ Загрузка Fear & Greed Index...")
@@ -328,32 +497,92 @@ async def about(update, context):
     await query.answer()
     await safe_edit_message(
         query,
-        "ℹ️ *Crypto AI Agents Bot v3*\n\n"
-        "📈 *PriceAgent*\n"
-        "Технический анализ: RSI, MA7/25/50/99/200, "
-        "объёмы, уровни, ATH. Рекомендации по "
-        "краткосроку, среднесроку, долгосроку и фьючерсам.\n\n"
-        "🧠 *SentimentAgent*\n"
-        "Fear & Greed, настроения сообщества, "
-        "community/developer scores.\n\n"
-        "🎯 *OrchestratorAgent*\n"
-        "Синтез: сигнал, уверенность, таймфреймы, "
-        "фьючерсные рекомендации с точками входа.\n\n"
-        "🪙 Топ-50 монет по капитализации\n"
-        "🔥 Trending монеты в реальном времени\n"
-        "📈 Глобальные данные рынка\n"
+        "ℹ️ *Crypto AI Agents Bot v4*\n\n"
+        "📈 *PriceAgent* — RSI, MA7/25/50/99/200, ATH, "
+        "краткосрок/среднесрок/долгосрок, фьючерсы\n\n"
+        "🧠 *SentimentAgent* — Fear & Greed, "
+        "community/developer scores\n\n"
+        "🎯 *OrchestratorAgent* — сигнал, таймфреймы, "
+        "точки входа\n\n"
+        "🪙 Топ-50 монет | 🔥 Trending | 📈 Глобальный рынок\n"
         "📡 CoinGecko + Alternative.me\n"
-        "⚡ Параллельная работа агентов",
+        "💎 VIP — безлимитный доступ",
         reply_markup=back_keyboard(),
     )
+
+
+# Admin commands
+async def cmd_addvip(update, context):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("Нет доступа.")
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /addvip USER_ID")
+        return
+    try:
+        target_id = int(context.args[0])
+        vip_users.add(target_id)
+        save_vip()
+        await update.message.reply_text(f"VIP добавлен: {target_id}")
+    except ValueError:
+        await update.message.reply_text("Неверный ID.")
+
+
+async def cmd_removevip(update, context):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("Нет доступа.")
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /removevip USER_ID")
+        return
+    try:
+        target_id = int(context.args[0])
+        vip_users.discard(target_id)
+        save_vip()
+        await update.message.reply_text(f"VIP удален: {target_id}")
+    except ValueError:
+        await update.message.reply_text("Неверный ID.")
+
+
+async def cmd_listvip(update, context):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("Нет доступа.")
+        return
+    if not vip_users:
+        await update.message.reply_text("VIP список пуст.")
+        return
+    text = "VIP пользователи:\n" + "\n".join([str(uid) for uid in vip_users])
+    await update.message.reply_text(text)
+
+
+async def cmd_stats(update, context):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("Нет доступа.")
+        return
+    today = date.today().isoformat()
+    active_today = sum(1 for u in user_daily_usage.values() if u["date"] == today)
+    total_analyses = sum(u["count"] for u in user_daily_usage.values() if u["date"] == today)
+    text = (
+        f"📊 Статистика:\n"
+        f"VIP: {len(vip_users)}\n"
+        f"Активных сегодня: {active_today}\n"
+        f"Анализов сегодня: {total_analyses}"
+    )
+    await update.message.reply_text(text)
 
 
 async def back_main(update, context):
     query = update.callback_query
     await query.answer()
+    user_id = query.from_user.id
+    vip_badge = " 💎" if is_vip(user_id) else ""
     await safe_edit_message(
         query,
-        "🤖 *Crypto AI Agents Bot v3*\n\nВыберите действие:",
+        f"🤖 *Crypto AI Agents Bot v4{vip_badge}*\n\nВыберите действие:",
         reply_markup=main_keyboard(),
     )
 
@@ -363,8 +592,13 @@ async def error_handler(update, context):
 
 
 def main():
+    load_vip()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("addvip", cmd_addvip))
+    app.add_handler(CommandHandler("removevip", cmd_removevip))
+    app.add_handler(CommandHandler("listvip", cmd_listvip))
+    app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CallbackQueryHandler(coins_page, pattern=r"^coins_page_"))
     app.add_handler(CallbackQueryHandler(analyze_coin, pattern=r"^analyze_"))
     app.add_handler(CallbackQueryHandler(market_overview, pattern=r"^market_overview$"))
@@ -372,9 +606,12 @@ def main():
     app.add_handler(CallbackQueryHandler(global_data, pattern=r"^global_data$"))
     app.add_handler(CallbackQueryHandler(fear_greed, pattern=r"^fear_greed$"))
     app.add_handler(CallbackQueryHandler(about, pattern=r"^about$"))
+    app.add_handler(CallbackQueryHandler(my_account, pattern=r"^my_account$"))
+    app.add_handler(CallbackQueryHandler(subscribe, pattern=r"^subscribe$"))
+    app.add_handler(CallbackQueryHandler(contact_admin, pattern=r"^contact_admin$"))
     app.add_handler(CallbackQueryHandler(back_main, pattern=r"^back_main$"))
     app.add_error_handler(error_handler)
-    logger.info("Crypto AI Agents Bot v3 started - REAL DATA + TOP 50")
+    logger.info("Crypto AI Agents Bot v4 - subscriptions + caching")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
