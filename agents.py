@@ -1,5 +1,5 @@
-# Crypto AI Agents - real market data from CoinGecko and Alternative.me
-# No more fake data - all prices, volumes, RSI, Fear&Greed are real
+# Crypto AI Agents v3 - Real data, top-50 coins, detailed analysis
+# CoinGecko + Alternative.me - all free APIs
 
 import asyncio
 import re
@@ -12,16 +12,8 @@ from anthropic import AsyncAnthropic
 logger = logging.getLogger("agents")
 
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
-MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", "500"))
-API_TIMEOUT = int(os.getenv("API_TIMEOUT", "45"))
-
-COINGECKO_IDS = {
-    "BTC": "bitcoin",
-    "ETH": "ethereum",
-    "BNB": "binancecoin",
-    "SOL": "solana",
-    "XRP": "ripple",
-}
+MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", "1500"))
+API_TIMEOUT = int(os.getenv("API_TIMEOUT", "60"))
 
 
 def escape_claude_response(text):
@@ -48,98 +40,150 @@ def compute_rsi(prices, period=14):
     return round(rsi, 1)
 
 
-async def fetch_price_data(coin):
-    cg_id = COINGECKO_IDS.get(coin, coin.lower())
+async def fetch_top_coins(limit=50):
     try:
         async with aiohttp.ClientSession() as session:
-            url_price = (
-                f"https://api.coingecko.com/api/v3/coins/{cg_id}"
-                f"?localization=false&tickers=false"
-                f"&community_data=false&developer_data=false"
+            url = (
+                f"https://api.coingecko.com/api/v3/coins/markets"
+                f"?vs_currency=usd&order=market_cap_desc"
+                f"&per_page={limit}&page=1&sparkline=false"
+                f"&price_change_percentage=1h,24h,7d"
             )
-            async with session.get(url_price, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status != 200:
-                    logger.error(f"CoinGecko price API error: {resp.status}")
+                    return []
+                data = await resp.json()
+                result = []
+                for coin in data:
+                    result.append({
+                        "id": coin.get("id", ""),
+                        "symbol": coin.get("symbol", "").upper(),
+                        "name": coin.get("name", ""),
+                        "price": coin.get("current_price", 0),
+                        "market_cap": coin.get("market_cap", 0),
+                        "volume": coin.get("total_volume", 0),
+                        "change_1h": coin.get("price_change_percentage_1h_in_currency", 0) or 0,
+                        "change_24h": coin.get("price_change_percentage_24h", 0) or 0,
+                        "change_7d": coin.get("price_change_percentage_7d_in_currency", 0) or 0,
+                        "market_cap_rank": coin.get("market_cap_rank", 0),
+                    })
+                return result
+    except Exception as e:
+        logger.error(f"fetch_top_coins error: {e}")
+        return []
+
+
+async def fetch_coin_id_map():
+    coins = await fetch_top_coins(50)
+    return {c["symbol"]: c["id"] for c in coins}
+
+
+async def fetch_price_data(coin_symbol, coin_id=None):
+    if not coin_id:
+        known = {
+            "BTC": "bitcoin", "ETH": "ethereum", "BNB": "binancecoin",
+            "SOL": "solana", "XRP": "ripple", "ADA": "cardano",
+            "DOGE": "dogecoin", "DOT": "polkadot", "AVAX": "avalanche-2",
+            "MATIC": "matic-network", "LINK": "chainlink", "UNI": "uniswap",
+            "ATOM": "cosmos", "LTC": "litecoin", "FIL": "filecoin",
+            "NEAR": "near", "APT": "aptos", "ARB": "arbitrum",
+            "OP": "optimism", "SUI": "sui", "SEI": "sei-network",
+            "TIA": "celestia", "INJ": "injective-protocol",
+            "PEPE": "pepe", "WIF": "dogwifcoin", "BONK": "bonk",
+            "SHIB": "shiba-inu", "TRX": "tron", "TON": "the-open-network",
+            "HBAR": "hedera-hashgraph", "VET": "vechain",
+            "ALGO": "algorand", "FTM": "fantom", "AAVE": "aave",
+            "MKR": "maker", "GRT": "the-graph", "RENDER": "render-token",
+            "IMX": "immutable-x", "STX": "blockstack", "EGLD": "elrond-erd-2",
+            "SAND": "the-sandbox", "MANA": "decentraland", "AXS": "axie-infinity",
+            "CRV": "curve-dao-token", "LDO": "lido-dao", "RUNE": "thorchain",
+            "ENS": "ethereum-name-service", "COMP": "compound-governance-token",
+            "SNX": "havven", "1INCH": "1inch", "GALA": "gala",
+        }
+        coin_id = known.get(coin_symbol, coin_symbol.lower())
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = (
+                f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+                f"?localization=false&tickers=false"
+                f"&community_data=true&developer_data=true"
+            )
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
                     return None
                 data = await resp.json()
 
-            price = data["market_data"]["current_price"]["usd"]
-            change_24h = data["market_data"]["price_change_percentage_24h"] or 0
-            volume = data["market_data"]["total_volume"]["usd"] or 0
+            md = data.get("market_data", {})
+            price = md.get("current_price", {}).get("usd", 0)
+            change_1h = md.get("price_change_percentage_1h_in_currency", {}).get("usd", 0) or 0
+            change_24h = md.get("price_change_percentage_24h", 0) or 0
+            change_7d = md.get("price_change_percentage_7d", 0) or 0
+            change_30d = md.get("price_change_percentage_30d", 0) or 0
+            volume = md.get("total_volume", {}).get("usd", 0) or 0
+            market_cap = md.get("market_cap", {}).get("usd", 0) or 0
+            ath = md.get("ath", {}).get("usd", 0) or 0
+            ath_change = md.get("ath_change_percentage", {}).get("usd", 0) or 0
+            high_24h = md.get("high_24h", {}).get("usd", 0) or 0
+            low_24h = md.get("low_24h", {}).get("usd", 0) or 0
 
-            url_history = (
-                f"https://api.coingecko.com/api/v3/coins/{cg_id}"
+            community = data.get("community_data", {})
+            sentiment_up = data.get("sentiment_votes_up_percentage", 0) or 0
+            sentiment_down = data.get("sentiment_votes_down_percentage", 0) or 0
+            community_score = data.get("community_score", 0) or 0
+            developer_score = data.get("developer_score", 0) or 0
+
+            url_hist = (
+                f"https://api.coingecko.com/api/v3/coins/{coin_id}"
                 f"/market_chart?vs_currency=usd&days=200&interval=daily"
             )
-            async with session.get(url_history, timeout=aiohttp.ClientTimeout(total=15)) as resp2:
-                if resp2.status != 200:
-                    logger.error(f"CoinGecko history API error: {resp2.status}")
-                    hist_prices = []
+            async with session.get(url_hist, timeout=aiohttp.ClientTimeout(total=15)) as resp2:
+                if resp2.status == 200:
+                    hist = await resp2.json()
+                    hist_prices = [p[1] for p in hist.get("prices", [])]
                 else:
-                    hist_data = await resp2.json()
-                    hist_prices = [p[1] for p in hist_data.get("prices", [])]
+                    hist_prices = []
 
             rsi = compute_rsi(hist_prices) if len(hist_prices) > 14 else 50.0
-            ma_50 = round(sum(hist_prices[-50:]) / min(len(hist_prices), 50), 2) if hist_prices else price
-            ma_200 = round(sum(hist_prices[-200:]) / min(len(hist_prices), 200), 2) if hist_prices else price
+            ma_7 = round(sum(hist_prices[-7:]) / max(len(hist_prices[-7:]), 1), 2) if hist_prices else price
+            ma_25 = round(sum(hist_prices[-25:]) / max(len(hist_prices[-25:]), 1), 2) if hist_prices else price
+            ma_50 = round(sum(hist_prices[-50:]) / max(len(hist_prices[-50:]), 1), 2) if hist_prices else price
+            ma_99 = round(sum(hist_prices[-99:]) / max(len(hist_prices[-99:]), 1), 2) if hist_prices else price
+            ma_200 = round(sum(hist_prices[-200:]) / max(len(hist_prices[-200:]), 1), 2) if hist_prices else price
 
             return {
-                "coin": coin,
-                "price": round(price, 4),
-                "change_24h": round(change_24h, 2),
-                "volume_24h": round(volume / 1e9, 2),
-                "rsi": rsi,
-                "ma_50": ma_50,
-                "ma_200": ma_200,
-                "timestamp": datetime.now().isoformat(),
-                "is_demo": False,
+                "coin": coin_symbol, "coin_id": coin_id, "price": round(price, 6),
+                "change_1h": round(change_1h, 2), "change_24h": round(change_24h, 2),
+                "change_7d": round(change_7d, 2), "change_30d": round(change_30d, 2),
+                "volume_24h": round(volume / 1e9, 2), "market_cap": round(market_cap / 1e9, 2),
+                "high_24h": round(high_24h, 6), "low_24h": round(low_24h, 6),
+                "ath": round(ath, 2), "ath_change": round(ath_change, 1),
+                "rsi": rsi, "ma_7": ma_7, "ma_25": ma_25,
+                "ma_50": ma_50, "ma_99": ma_99, "ma_200": ma_200,
+                "sentiment_up": round(sentiment_up), "sentiment_down": round(sentiment_down),
+                "community_score": community_score, "developer_score": developer_score,
+                "timestamp": datetime.now().isoformat(), "is_demo": False,
             }
     except Exception as e:
-        logger.error(f"fetch_price_data error for {coin}: {e}")
+        logger.error(f"fetch_price_data error for {coin_symbol}: {e}")
         return None
 
 
-async def fetch_sentiment_data(coin):
+async def fetch_sentiment_data(coin_symbol):
     try:
         async with aiohttp.ClientSession() as session:
             url_fg = "https://api.alternative.me/fng/?limit=1"
             async with session.get(url_fg, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    fg_value = 50
-                    fg_label = "Neutral"
-                else:
+                if resp.status == 200:
                     fg_data = await resp.json()
                     fg_entry = fg_data.get("data", [{}])[0]
                     fg_value = int(fg_entry.get("value", 50))
                     fg_label = fg_entry.get("value_classification", "Neutral")
-
-            cg_id = COINGECKO_IDS.get(coin, coin.lower())
-            url_coin = (
-                f"https://api.coingecko.com/api/v3/coins/{cg_id}"
-                f"?localization=false&tickers=false"
-                f"&community_data=true&developer_data=false"
-            )
-            async with session.get(url_coin, timeout=aiohttp.ClientTimeout(total=15)) as resp2:
-                if resp2.status == 200:
-                    coin_data = await resp2.json()
-                    sentiment_up = coin_data.get("sentiment_votes_up_percentage", 60) or 60
-                    sentiment_down = coin_data.get("sentiment_votes_down_percentage", 40) or 40
                 else:
-                    sentiment_up = 60
-                    sentiment_down = 40
-
-            return {
-                "coin": coin,
-                "fear_greed_index": fg_value,
-                "fear_greed_label": fg_label,
-                "news_positive_pct": round(sentiment_up),
-                "news_negative_pct": round(sentiment_down),
-                "timestamp": datetime.now().isoformat(),
-                "is_demo": False,
-            }
+                    fg_value, fg_label = 50, "Neutral"
+            return {"fear_greed_index": fg_value, "fear_greed_label": fg_label}
     except Exception as e:
-        logger.error(f"fetch_sentiment_data error for {coin}: {e}")
-        return None
+        logger.error(f"fetch_sentiment_data error: {e}")
+        return {"fear_greed_index": 50, "fear_greed_label": "Neutral"}
 
 
 async def fetch_fear_greed():
@@ -152,47 +196,105 @@ async def fetch_fear_greed():
                 data = await resp.json()
                 entry = data.get("data", [{}])[0]
                 return int(entry.get("value", 50)), entry.get("value_classification", "Neutral")
-    except Exception as e:
-        logger.error(f"fetch_fear_greed error: {e}")
+    except:
         return 50, "Neutral"
+
+
+async def fetch_trending():
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = "https://api.coingecko.com/api/v3/search/trending"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+                coins = data.get("coins", [])
+                result = []
+                for item in coins[:10]:
+                    c = item.get("item", {})
+                    result.append({
+                        "name": c.get("name", ""),
+                        "symbol": c.get("symbol", "").upper(),
+                        "market_cap_rank": c.get("market_cap_rank", 0),
+                        "price_btc": c.get("price_btc", 0),
+                    })
+                return result
+    except Exception as e:
+        logger.error(f"fetch_trending error: {e}")
+        return []
+
+
+async def fetch_global_data():
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = "https://api.coingecko.com/api/v3/global"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    return None
+                raw = await resp.json()
+                data = raw.get("data", {})
+                return {
+                    "total_market_cap": round(data.get("total_market_cap", {}).get("usd", 0) / 1e12, 2),
+                    "total_volume": round(data.get("total_volume", {}).get("usd", 0) / 1e9, 1),
+                    "btc_dominance": round(data.get("market_cap_percentage", {}).get("btc", 0), 1),
+                    "eth_dominance": round(data.get("market_cap_percentage", {}).get("eth", 0), 1),
+                    "active_coins": data.get("active_cryptocurrencies", 0),
+                    "market_cap_change_24h": round(data.get("market_cap_change_percentage_24h_usd", 0), 2),
+                }
+    except Exception as e:
+        logger.error(f"fetch_global_data error: {e}")
+        return None
 
 
 class PriceAgent:
     SYSTEM_PROMPT = (
-        "You are a professional cryptocurrency technical analyst. "
-        "Give a SHORT analysis (3-4 sentences) in RUSSIAN language. "
-        "Mention: trend, RSI signal, key support/resistance levels, conclusion. "
-        "Do NOT use any Markdown formatting. Write plain text only. "
-        "Your entire response MUST be in Russian."
+        "IMPORTANT: You MUST reply ONLY in Russian using Cyrillic alphabet. "
+        "Never use Latin/transliteration. "
+        "You are a professional crypto technical analyst. "
+        "Give a DETAILED analysis (6-8 sentences) covering: "
+        "1) Current trend and key levels "
+        "2) RSI and MA signals "
+        "3) Short-term outlook (1-7 days) "
+        "4) Mid-term outlook (1-4 weeks) "
+        "5) Long-term outlook (1-3 months) "
+        "6) Futures trading suggestion with entry zones and leverage recommendation "
+        "No Markdown formatting. Plain text only. ONLY Cyrillic Russian."
     )
 
     def __init__(self, client):
         self.client = client
 
-    async def analyze(self, coin):
-        data = await fetch_price_data(coin)
+    async def analyze(self, coin, coin_id=None):
+        data = await fetch_price_data(coin, coin_id)
         if data is None:
             return {
                 "agent": "PriceAgent", "coin": coin,
-                "raw_data": {}, "summary": f"Ne udalos poluchit dannyye dlya {coin}.",
+                "raw_data": {}, "summary": "Не удалось получить данные.",
                 "trend": "unknown", "rsi": 50, "rsi_signal": "unknown",
             }
+        trend = "бычий" if data["change_24h"] > 2 else "медвежий" if data["change_24h"] < -2 else "боковой"
+        rsi_signal = "перекуплен" if data["rsi"] > 70 else "перепродан" if data["rsi"] < 30 else "нейтрален"
 
-        trend = "bychiy" if data["change_24h"] > 2 else "medvezhiy" if data["change_24h"] < -2 else "bokovoy"
-        rsi_signal = (
-            "perekuplen" if data["rsi"] > 70
-            else "pereprodан" if data["rsi"] < 30
-            else "neytralen"
-        )
         user_msg = (
-            f"Moneta: {coin}\n"
-            f"Tsena: ${data['price']:,.4f}\n"
-            f"Izmeneniye 24ch: {data['change_24h']:+.2f}%\n"
-            f"Obyom: ${data['volume_24h']}B\n"
+            f"Монета: {coin}\n"
+            f"Цена: ${data['price']:,.6f}\n"
+            f"Изменение 1ч: {data['change_1h']:+.2f}%\n"
+            f"Изменение 24ч: {data['change_24h']:+.2f}%\n"
+            f"Изменение 7д: {data['change_7d']:+.2f}%\n"
+            f"Изменение 30д: {data['change_30d']:+.2f}%\n"
+            f"Объём 24ч: ${data['volume_24h']}B\n"
+            f"Капитализация: ${data['market_cap']}B\n"
+            f"Хай 24ч: ${data['high_24h']:,.6f}\n"
+            f"Лоу 24ч: ${data['low_24h']:,.6f}\n"
+            f"ATH: ${data['ath']:,.2f} ({data['ath_change']:+.1f}% от ATH)\n"
             f"RSI(14): {data['rsi']} ({rsi_signal})\n"
+            f"MA7: ${data['ma_7']:,.2f}\n"
+            f"MA25: ${data['ma_25']:,.2f}\n"
             f"MA50: ${data['ma_50']:,.2f}\n"
+            f"MA99: ${data['ma_99']:,.2f}\n"
             f"MA200: ${data['ma_200']:,.2f}\n"
-            f"Trend: {trend}"
+            f"Тренд: {trend}\n"
+            f"Настроения сообщества: {data['sentiment_up']}% позитив / {data['sentiment_down']}% негатив"
         )
         try:
             response = await asyncio.wait_for(
@@ -205,8 +307,8 @@ class PriceAgent:
             )
             summary = escape_claude_response(response.content[0].text)
         except Exception as e:
-            logger.error(f"PriceAgent Claude error for {coin}: {e}")
-            summary = f"Oshibka analiza {coin}: {type(e).__name__}"
+            logger.error(f"PriceAgent error for {coin}: {e}")
+            summary = f"Ошибка анализа: {type(e).__name__}"
         return {
             "agent": "PriceAgent", "coin": coin,
             "raw_data": data, "summary": summary,
@@ -216,29 +318,38 @@ class PriceAgent:
 
 class SentimentAgent:
     SYSTEM_PROMPT = (
-        "You are a cryptocurrency market sentiment expert. "
-        "Give a SHORT analysis (3-4 sentences) in RUSSIAN language. "
-        "Do NOT use any Markdown formatting. Write plain text only. "
-        "Your entire response MUST be in Russian."
+        "IMPORTANT: You MUST reply ONLY in Russian using Cyrillic alphabet. "
+        "Never use Latin/transliteration. "
+        "You are a crypto market sentiment expert. "
+        "Give a DETAILED analysis (5-7 sentences) covering: "
+        "1) Fear & Greed interpretation "
+        "2) Community sentiment analysis "
+        "3) What this means for short-term and mid-term "
+        "4) Historical context of similar sentiment levels "
+        "No Markdown formatting. Plain text only. ONLY Cyrillic Russian."
     )
 
     def __init__(self, client):
         self.client = client
 
-    async def analyze(self, coin):
-        data = await fetch_sentiment_data(coin)
-        if data is None:
+    async def analyze(self, coin, coin_id=None):
+        price_data = await fetch_price_data(coin, coin_id)
+        sentiment = await fetch_sentiment_data(coin)
+        if price_data is None:
             return {
                 "agent": "SentimentAgent", "coin": coin,
-                "raw_data": {}, "summary": f"Ne udalos poluchit dannyye nastroyeniy dlya {coin}.",
+                "raw_data": {}, "summary": "Не удалось получить данные.",
                 "fear_greed": 50, "fear_greed_label": "Neutral",
             }
         user_msg = (
-            f"Moneta: {coin}\n"
-            f"Fear & Greed Index: {data['fear_greed_index']}/100 "
-            f"({data['fear_greed_label']})\n"
-            f"Pozitivnyye nastroyeniya: {data['news_positive_pct']}%\n"
-            f"Negativnyye nastroyeniya: {data['news_negative_pct']}%\n"
+            f"Монета: {coin}\n"
+            f"Fear & Greed Index: {sentiment['fear_greed_index']}/100 ({sentiment['fear_greed_label']})\n"
+            f"Настроения сообщества: {price_data['sentiment_up']}% позитив / {price_data['sentiment_down']}% негатив\n"
+            f"Community Score: {price_data['community_score']}\n"
+            f"Developer Score: {price_data['developer_score']}\n"
+            f"Изменение цены 24ч: {price_data['change_24h']:+.2f}%\n"
+            f"Изменение цены 7д: {price_data['change_7d']:+.2f}%\n"
+            f"Объём торгов: ${price_data['volume_24h']}B"
         )
         try:
             response = await asyncio.wait_for(
@@ -251,13 +362,13 @@ class SentimentAgent:
             )
             summary = escape_claude_response(response.content[0].text)
         except Exception as e:
-            logger.error(f"SentimentAgent Claude error for {coin}: {e}")
-            summary = f"Oshibka analiza nastroyeniy: {type(e).__name__}"
+            logger.error(f"SentimentAgent error for {coin}: {e}")
+            summary = f"Ошибка анализа настроений: {type(e).__name__}"
         return {
             "agent": "SentimentAgent", "coin": coin,
-            "raw_data": data, "summary": summary,
-            "fear_greed": data["fear_greed_index"],
-            "fear_greed_label": data["fear_greed_label"],
+            "raw_data": price_data, "summary": summary,
+            "fear_greed": sentiment["fear_greed_index"],
+            "fear_greed_label": sentiment["fear_greed_label"],
         }
 
     async def fear_greed_only(self):
@@ -269,13 +380,16 @@ class SentimentAgent:
                 self.client.messages.create(
                     model=MODEL, max_tokens=MAX_TOKENS,
                     system=(
-                        "You are a crypto market expert. Answer in RUSSIAN language, "
-                        "briefly (3 sentences). No Markdown. Plain text only."
+                        "IMPORTANT: Reply ONLY in Russian using Cyrillic alphabet. "
+                        "Never use Latin/transliteration. "
+                        "You are a crypto market expert. "
+                        "Give detailed analysis (4-5 sentences). No Markdown."
                     ),
                     messages=[{
                         "role": "user",
                         "content": f"Fear & Greed Index: {fg}/100 ({label}). "
-                                   f"Obyasni chto eto znachit dlya rynka.",
+                                   f"Объясни что это значит для рынка, какие исторические "
+                                   f"параллели, и что делать инвесторам.",
                     }],
                 ),
                 timeout=API_TIMEOUT,
@@ -283,7 +397,7 @@ class SentimentAgent:
             explanation = escape_claude_response(response.content[0].text)
         except Exception as e:
             logger.error(f"Fear&Greed error: {e}")
-            explanation = "Ne udalos poluchit analiz."
+            explanation = "Не удалось получить анализ."
         return (
             f"*Fear & Greed Index*\n"
             f"[{bar}]\n"
@@ -294,28 +408,37 @@ class SentimentAgent:
 
 class OrchestratorAgent:
     SYSTEM_PROMPT = (
-        "You are the chief analyst of a cryptocurrency fund. "
-        "Synthesize data from two analysts and give a final recommendation.\n"
-        "Response format STRICTLY (in Russian):\n"
-        "Сигнал: ПОКУПАТЬ / ДЕРЖАТЬ / ПРОДАВАТЬ\n"
-        "Уверенность: X%\n"
-        "Ключевые факторы: (2-3 items)\n"
-        "Риски: (1-2 items)\n\n"
-        "Do NOT use any Markdown formatting. Write plain text only. "
-        "Your ENTIRE response MUST be in Russian."
+        "IMPORTANT: You MUST reply ONLY in Russian using Cyrillic alphabet. "
+        "Never use Latin/transliteration. "
+        "You are the chief analyst of a crypto fund. "
+        "Synthesize data from two analysts and give a DETAILED recommendation.\n"
+        "Response format STRICTLY:\n"
+        "СИГНАЛ: ПОКУПАТЬ / ДЕРЖАТЬ / ПРОДАВАТЬ\n"
+        "Уверенность: X%\n\n"
+        "КРАТКОСРОК (1-7 дней): рекомендация и обоснование\n"
+        "СРЕДНЕСРОК (1-4 недели): рекомендация и обоснование\n"
+        "ДОЛГОСРОК (1-3 месяца): рекомендация и обоснование\n\n"
+        "ФЬЮЧЕРСЫ: направление (лонг/шорт), зона входа, "
+        "рекомендуемое плечо, стоп-лосс, тейк-профит\n\n"
+        "Ключевые факторы: (3-4 пункта)\n"
+        "Риски: (2-3 пункта)\n\n"
+        "No Markdown. Plain text only. ONLY Cyrillic Russian."
     )
 
     def __init__(self, client):
         self.client = client
 
     async def synthesize(self, coin, price_data, sentiment_data):
+        raw = price_data.get("raw_data", {})
         user_msg = (
-            f"Moneta: {coin}\n\n"
-            f"=== TEKHNICHESKIY ANALIZ (PriceAgent) ===\n"
+            f"Монета: {coin}\n"
+            f"Цена: ${raw.get('price', 0):,.6f}\n"
+            f"ATH: ${raw.get('ath', 0):,.2f} ({raw.get('ath_change', 0):+.1f}%)\n\n"
+            f"=== ТЕХНИЧЕСКИЙ АНАЛИЗ ===\n"
             f"{price_data['summary']}\n"
             f"RSI: {price_data['rsi']} ({price_data['rsi_signal']})\n"
-            f"Trend: {price_data['trend']}\n\n"
-            f"=== ANALIZ NASTROYENIY (SentimentAgent) ===\n"
+            f"Тренд: {price_data['trend']}\n\n"
+            f"=== АНАЛИЗ НАСТРОЕНИЙ ===\n"
             f"{sentiment_data['summary']}\n"
             f"Fear & Greed: {sentiment_data['fear_greed']}/100 "
             f"({sentiment_data['fear_greed_label']})"
@@ -332,39 +455,50 @@ class OrchestratorAgent:
             recommendation = escape_claude_response(response.content[0].text)
         except Exception as e:
             logger.error(f"OrchestratorAgent error for {coin}: {e}")
-            recommendation = f"Oshibka sinteza: {type(e).__name__}"
+            recommendation = f"Ошибка синтеза: {type(e).__name__}"
         return {
-            "agent": "OrchestratorAgent",
-            "coin": coin,
+            "agent": "OrchestratorAgent", "coin": coin,
             "recommendation": recommendation,
         }
 
-    async def market_overview(self, coins):
+    async def market_overview(self, coins_data):
         items = []
-        for coin in coins:
-            data = await fetch_price_data(coin)
-            if data:
-                emoji = "🟢" if data["change_24h"] > 0 else "🔴"
-                items.append(
-                    f"{emoji} *{coin}*: ${data['price']:,.2f} "
-                    f"({data['change_24h']:+.2f}%)"
-                )
-            else:
-                items.append(f"⚪ *{coin}*: dannyye nedostupny")
+        for cd in coins_data:
+            emoji = "🟢" if cd["change_24h"] > 0 else "🔴"
+            items.append(
+                f"{emoji} *{cd['symbol']}*: ${cd['price']:,.2f} "
+                f"({cd['change_24h']:+.2f}%)"
+            )
         fg, fg_label = await fetch_fear_greed()
+        global_data = await fetch_global_data()
         items_text = "\n".join(items)
+        global_text = ""
+        if global_data:
+            global_text = (
+                f"\nОбщая капитализация: ${global_data['total_market_cap']}T\n"
+                f"Объём 24ч: ${global_data['total_volume']}B\n"
+                f"Доминация BTC: {global_data['btc_dominance']}%\n"
+                f"Доминация ETH: {global_data['eth_dominance']}%\n"
+                f"Изменение капитализации 24ч: {global_data['market_cap_change_24h']:+.2f}%"
+            )
         try:
             response = await asyncio.wait_for(
                 self.client.messages.create(
                     model=MODEL, max_tokens=MAX_TOKENS,
                     system=(
-                        "You are a crypto market expert. Give a brief overview "
-                        "(3-4 sentences) in RUSSIAN language. No Markdown. Plain text only."
+                        "IMPORTANT: Reply ONLY in Russian using Cyrillic alphabet. "
+                        "Never use Latin/transliteration. "
+                        "You are a crypto market expert. "
+                        "Give detailed overview (5-7 sentences) with specific "
+                        "recommendations. No Markdown."
                     ),
                     messages=[{
                         "role": "user",
-                        "content": f"Rynok segodnya:\n{items_text}\n"
-                                   f"Fear & Greed: {fg}/100 ({fg_label})",
+                        "content": f"Рынок сегодня:\n{items_text}\n"
+                                   f"{global_text}\n"
+                                   f"Fear & Greed: {fg}/100 ({fg_label})\n"
+                                   f"Какие монеты сейчас наиболее интересны для "
+                                   f"краткосрочной и среднесрочной торговли?",
                     }],
                 ),
                 timeout=API_TIMEOUT,
@@ -372,8 +506,8 @@ class OrchestratorAgent:
             analysis = escape_claude_response(response.content[0].text)
         except Exception as e:
             logger.error(f"Market overview error: {e}")
-            analysis = "Ne udalos poluchit analiz rynka."
+            analysis = "Не удалось получить анализ рынка."
         return (
-            f"{items_text}\n\n"
-            f"*Analiz:*\n{analysis}"
+            f"{items_text}\n{global_text}\n\n"
+            f"*Анализ:*\n{analysis}"
         )
