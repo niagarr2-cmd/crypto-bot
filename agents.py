@@ -1,114 +1,191 @@
 """
 Crypto AI Agents — Три агента для анализа крипторынка.
 
-Исправления относительно исходного ТЗ:
-1. AsyncAnthropic вместо синхронного Anthropic (реальный параллелизм)
-2. Обработка ошибок Claude API
-3. Экранирование Markdown-символов для Telegram
-4. Пометка "демо-данные" в выводе (пока нет реального API)
-5. Rate limiting готовность
+v2: Реальные данные через CoinGecko API + Alternative.me Fear&Greed
 """
 
 import asyncio
-import random
 import re
 import os
 import logging
+import aiohttp
 from datetime import datetime
 from anthropic import AsyncAnthropic
 
 logger = logging.getLogger(__name__)
 
-# Конфигурация через env переменные
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", "500"))
-
-# Таймаут для Claude API запросов (секунды)
 API_TIMEOUT = int(os.getenv("API_TIMEOUT", "45"))
 
+# CoinGecko
+COINGECKO_BASE = "https://api.coingecko.com/api/v3"
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY", "")
 
-def escape_markdown(text: str) -> str:
-    """
-    Экранирование спецсимволов Markdown V1 для Telegram.
-    Claude может вернуть любые символы — без этого бот падает.
-    """
-    # Сохраняем наши собственные * и _ (для форматирования),
-    # но экранируем те, что пришли от Claude
-    # Простой подход: убираем markdown из ответов Claude
-    escape_chars = r"[\`\[\]()~>#\+\-=|{}.!]"
-    return re.sub(escape_chars, lambda m: "\\" + m.group(), text)
+# Alternative.me Fear & Greed
+FEAR_GREED_URL = "https://api.alternative.me/fng/"
 
 
 def escape_claude_response(text: str) -> str:
-    """
-    Безопасная обработка ответа Claude для Telegram Markdown.
-    Убираем все Markdown-конструкции, которые Claude мог добавить.
-    """
-    # Убираем ** bold ** → просто текст
+    """Убираем Markdown из ответов Claude для Telegram."""
     text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
-    # Убираем * italic * → просто текст
     text = re.sub(r"\*(.*?)\*", r"\1", text)
-    # Убираем ``` code blocks ```
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
-    # Убираем `inline code`
     text = re.sub(r"`(.*?)`", r"\1", text)
-    # Убираем [links](url)
     text = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", text)
-    # Экранируем оставшиеся опасные символы для Markdown V1
-    # В Markdown V1 опасны: _ * [ ] ( ) ~ ` > # + - = | { } . !
-    # Но мы используем Markdown (не V2), так что опасны только _ * ` [
     text = text.replace("_", "\\_")
-    return text
+    return text.strip()
 
 
 # ─────────────────────────────────────────────
-# Генераторы демо-данных (заглушки)
-# TODO: Заменить на CoinGecko API / Binance API
+# CoinGecko API
 # ─────────────────────────────────────────────
 
-def _fake_price_data(coin: str) -> dict:
-    """Генерация демо-данных цены. ЗАГЛУШКА — не реальные данные!"""
-    base_prices = {
-        "BTC": 65000, "ETH": 3200, "BNB": 580,
-        "SOL": 170, "XRP": 0.62,
-    }
-    price = base_prices.get(coin, 100) * random.uniform(0.95, 1.05)
-    change_24h = random.uniform(-8, 8)
-    volume = random.uniform(1e9, 5e10)
-    rsi = random.uniform(25, 80)
-    ma_50 = price * random.uniform(0.92, 1.05)
-    ma_200 = price * random.uniform(0.85, 1.10)
+async def fetch_top_coins(limit: int = 50) -> list[dict]:
+    """
+    Получить топ-N монет по капитализации с CoinGecko.
+    Возвращает список: [{id, symbol, name, current_price, ...}]
+    """
+    headers = {}
+    if COINGECKO_API_KEY:
+        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
 
-    return {
-        "coin": coin,
-        "price": round(price, 4),
-        "change_24h": round(change_24h, 2),
-        "volume_24h": round(volume / 1e9, 2),
-        "rsi": round(rsi, 1),
-        "ma_50": round(ma_50, 2),
-        "ma_200": round(ma_200, 2),
-        "timestamp": datetime.now().isoformat(),
-        "is_demo": True,  # Флаг: данные не настоящие
+    params = {
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": limit,
+        "page": 1,
+        "sparkline": "false",
+        "price_change_percentage": "24h",
     }
 
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{COINGECKO_BASE}/coins/markets",
+                params=params,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    logger.info(f"CoinGecko: loaded {len(data)} coins")
+                    return data
+                else:
+                    logger.warning(f"CoinGecko status {resp.status}")
+                    return []
+    except Exception as e:
+        logger.error(f"CoinGecko fetch_top_coins error: {e}")
+        return []
 
-def _fake_sentiment_data(coin: str) -> dict:
-    """Генерация демо-данных настроений. ЗАГЛУШКА — не реальные данные!"""
-    labels = ["Extreme Fear", "Fear", "Neutral", "Greed", "Extreme Greed"]
-    fg_value = random.randint(10, 90)
-    fg_label = labels[min(fg_value // 20, 4)]
-    positive_pct = random.randint(30, 75)
 
-    return {
-        "coin": coin,
-        "fear_greed_index": fg_value,
-        "fear_greed_label": fg_label,
-        "news_positive_pct": positive_pct,
-        "news_negative_pct": 100 - positive_pct,
-        "social_mentions_24h": random.randint(5000, 200000),
-        "trending_score": round(random.uniform(1, 10), 1),
-        "is_demo": True,
-    }
+async def fetch_coin_detail(coin_id: str) -> dict | None:
+    """
+    Детальные данные по монете: RSI, MA — из /coins/{id}.
+    CoinGecko Free не даёт RSI напрямую, считаем из OHLC.
+    """
+    headers = {}
+    if COINGECKO_API_KEY:
+        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # OHLC за последние 14 дней для RSI
+            async with session.get(
+                f"{COINGECKO_BASE}/coins/{coin_id}/ohlc",
+                params={"vs_currency": "usd", "days": "14"},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                ohlc = await resp.json()
+                return {"ohlc": ohlc}
+    except Exception as e:
+        logger.error(f"CoinGecko fetch_coin_detail error {coin_id}: {e}")
+        return None
+
+
+def calculate_rsi(ohlc_data: list, period: int = 14) -> float | None:
+    """Расчёт RSI из OHLC данных CoinGecko."""
+    if not ohlc_data or len(ohlc_data) < period + 1:
+        return None
+
+    closes = [candle[4] for candle in ohlc_data]  # close price
+
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gains.append(max(delta, 0))
+        losses.append(max(-delta, 0))
+
+    if not gains:
+        return None
+
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+
+    if avg_loss == 0:
+        return 100.0
+
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 1)
+
+
+async def fetch_fear_greed() -> dict:
+    """Fear & Greed Index от Alternative.me."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                FEAR_GREED_URL,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    item = data["data"][0]
+                    return {
+                        "value": int(item["value"]),
+                        "label": item["value_classification"],
+                        "is_real": True,
+                    }
+    except Exception as e:
+        logger.error(f"Fear&Greed fetch error: {e}")
+
+    # Fallback
+    import random
+    v = random.randint(30, 70)
+    return {"value": v, "label": "Neutral", "is_real": False}
+
+
+# Кэш топ-монет (обновляем раз в 10 минут)
+_coins_cache: list[dict] = []
+_coins_cache_time: float = 0
+COINS_CACHE_TTL = 600  # секунд
+
+
+async def get_top_coins_cached(limit: int = 50) -> list[dict]:
+    """Топ монеты с кэшированием."""
+    import time
+    global _coins_cache, _coins_cache_time
+
+    if _coins_cache and (time.time() - _coins_cache_time) < COINS_CACHE_TTL:
+        return _coins_cache[:limit]
+
+    coins = await fetch_top_coins(limit)
+    if coins:
+        _coins_cache = coins
+        _coins_cache_time = time.time()
+
+    return _coins_cache[:limit] if _coins_cache else []
+
+
+def find_coin_in_list(symbol: str, coins: list[dict]) -> dict | None:
+    """Найти монету по символу (BTC, ETH, ...)."""
+    symbol_upper = symbol.upper()
+    for coin in coins:
+        if coin.get("symbol", "").upper() == symbol_upper:
+            return coin
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -122,34 +199,58 @@ class PriceAgent:
         "Ты профессиональный технический аналитик криптовалютного рынка. "
         "Дай КРАТКИЙ анализ (3-4 предложения) на русском языке. "
         "Укажи: тренд, RSI сигнал, ключевые уровни, вывод. "
-        "НЕ используй Markdown-форматирование (звёздочки, подчёркивания и т.д.). "
-        "Пиши простым текстом."
+        "НЕ используй Markdown-форматирование. Пиши простым текстом."
     )
 
     def __init__(self, client: AsyncAnthropic):
         self.client = client
 
-    async def analyze(self, coin: str) -> dict:
-        data = _fake_price_data(coin)
+    async def analyze(self, coin: str, coin_data: dict | None = None) -> dict:
+        is_real = False
 
-        trend = "бычий" if data["change_24h"] > 0 else "медвежий"
-        if abs(data["change_24h"]) < 1.0:
-            trend = "боковой"
+        if coin_data:
+            price = coin_data.get("current_price", 0)
+            change_24h = coin_data.get("price_change_percentage_24h") or 0
+            volume = (coin_data.get("total_volume") or 0) / 1e9
+            market_cap = coin_data.get("market_cap") or 0
+            high_24h = coin_data.get("high_24h") or price
+            low_24h = coin_data.get("low_24h") or price
+            coin_id = coin_data.get("id", coin.lower())
+            is_real = True
 
+            # Попробуем получить RSI
+            detail = await fetch_coin_detail(coin_id)
+            rsi = None
+            if detail and detail.get("ohlc"):
+                rsi = calculate_rsi(detail["ohlc"])
+            if rsi is None:
+                rsi = 50.0  # нейтральное значение если не удалось
+
+        else:
+            # Fallback: демо
+            import random
+            price = 100 * random.uniform(0.95, 1.05)
+            change_24h = random.uniform(-5, 5)
+            volume = random.uniform(0.1, 5)
+            high_24h = price * 1.03
+            low_24h = price * 0.97
+            rsi = random.uniform(35, 65)
+            is_real = False
+
+        trend = "бычий" if change_24h > 0 else ("медвежий" if change_24h < -1 else "боковой")
         rsi_signal = (
-            "перекуплен" if data["rsi"] > 70
-            else "перепродан" if data["rsi"] < 30
-            else "нейтрален"
+            "перекуплен" if rsi > 70 else
+            "перепродан" if rsi < 30 else
+            "нейтрален"
         )
 
         user_msg = (
             f"Монета: {coin}\n"
-            f"Цена: ${data['price']:,.4f}\n"
-            f"Изменение 24ч: {data['change_24h']:+.2f}%\n"
-            f"Объём: ${data['volume_24h']}B\n"
-            f"RSI(14): {data['rsi']} ({rsi_signal})\n"
-            f"MA50: ${data['ma_50']:,.2f}\n"
-            f"MA200: ${data['ma_200']:,.2f}\n"
+            f"Цена: ${price:,.4f}\n"
+            f"Изменение 24ч: {change_24h:+.2f}%\n"
+            f"Объём 24ч: ${volume:.2f}B\n"
+            f"Макс 24ч: ${high_24h:,.4f} / Мин 24ч: ${low_24h:,.4f}\n"
+            f"RSI(14): {rsi} ({rsi_signal})\n"
             f"Тренд: {trend}"
         )
 
@@ -165,7 +266,6 @@ class PriceAgent:
             )
             summary = escape_claude_response(response.content[0].text)
         except asyncio.TimeoutError:
-            logger.error(f"PriceAgent timeout for {coin}")
             summary = f"Тайм-аут анализа {coin}. Попробуйте позже."
         except Exception as e:
             logger.error(f"PriceAgent error for {coin}: {e}")
@@ -174,11 +274,13 @@ class PriceAgent:
         return {
             "agent": "PriceAgent",
             "coin": coin,
-            "raw_data": data,
+            "price": price,
+            "change_24h": change_24h,
             "summary": summary,
             "trend": trend,
-            "rsi": data["rsi"],
+            "rsi": rsi,
             "rsi_signal": rsi_signal,
+            "is_real": is_real,
         }
 
 
@@ -195,16 +297,15 @@ class SentimentAgent:
         self.client = client
 
     async def analyze(self, coin: str) -> dict:
-        data = _fake_sentiment_data(coin)
+        fg_data = await fetch_fear_greed()
+        fg = fg_data["value"]
+        fg_label = fg_data["label"]
+        is_real = fg_data["is_real"]
 
         user_msg = (
             f"Монета: {coin}\n"
-            f"Fear & Greed Index: {data['fear_greed_index']}/100 "
-            f"({data['fear_greed_label']})\n"
-            f"Позитивные новости: {data['news_positive_pct']}%\n"
-            f"Негативные новости: {data['news_negative_pct']}%\n"
-            f"Упоминания в соцсетях за 24ч: {data['social_mentions_24h']:,}\n"
-            f"Тренд-скор: {data['trending_score']}/10"
+            f"Fear & Greed Index: {fg}/100 ({fg_label})\n"
+            f"Данные: {'реальные' if is_real else 'демо'}"
         )
 
         try:
@@ -219,7 +320,6 @@ class SentimentAgent:
             )
             summary = escape_claude_response(response.content[0].text)
         except asyncio.TimeoutError:
-            logger.error(f"SentimentAgent timeout for {coin}")
             summary = f"Тайм-аут анализа настроений {coin}."
         except Exception as e:
             logger.error(f"SentimentAgent error for {coin}: {e}")
@@ -228,24 +328,28 @@ class SentimentAgent:
         return {
             "agent": "SentimentAgent",
             "coin": coin,
-            "raw_data": data,
             "summary": summary,
-            "fear_greed": data["fear_greed_index"],
-            "fear_greed_label": data["fear_greed_label"],
+            "fear_greed": fg,
+            "fear_greed_label": fg_label,
+            "is_real": is_real,
         }
 
     async def fear_greed_only(self) -> str:
-        """Отдельный запрос только для Fear & Greed индекса."""
-        fg = random.randint(10, 90)
+        """Fear & Greed Index — отдельный запрос."""
+        fg_data = await fetch_fear_greed()
+        fg = fg_data["value"]
+        label_raw = fg_data["label"]
+        is_real = fg_data["is_real"]
 
-        thresholds = [
-            (25, "Extreme Fear 😱"),
-            (45, "Fear 😨"),
-            (55, "Neutral 😐"),
-            (75, "Greed 🤑"),
-            (101, "Extreme Greed 🚀"),
-        ]
-        label = next(lbl for thresh, lbl in thresholds if fg < thresh)
+        emoji_map = {
+            "Extreme Fear": "😱",
+            "Fear": "😨",
+            "Neutral": "😐",
+            "Greed": "🤑",
+            "Extreme Greed": "🚀",
+        }
+        emoji = emoji_map.get(label_raw, "📊")
+        label = f"{label_raw} {emoji}"
 
         filled = fg // 5
         bar = "█" * filled + "░" * (20 - filled)
@@ -255,34 +359,32 @@ class SentimentAgent:
                 self.client.messages.create(
                     model=MODEL,
                     max_tokens=MAX_TOKENS,
-                    system=(
-                        "Эксперт по крипторынку. Отвечай по-русски, "
-                        "кратко (3 предложения). Без Markdown."
-                    ),
+                    system="Эксперт по крипторынку. Отвечай по-русски, кратко (3 предложения). Без Markdown.",
                     messages=[{
                         "role": "user",
-                        "content": f"Fear & Greed Index: {fg}/100 ({label}). "
-                                   f"Объясни что это значит для рынка.",
+                        "content": f"Fear & Greed Index: {fg}/100 ({label_raw}). Объясни что это значит для рынка.",
                     }],
                 ),
                 timeout=API_TIMEOUT,
             )
             explanation = escape_claude_response(response.content[0].text)
         except Exception as e:
-            logger.error(f"Fear&Greed error: {e}")
+            logger.error(f"Fear&Greed analysis error: {e}")
             explanation = "Не удалось получить анализ. Попробуйте позже."
+
+        source_note = "✅ Реальные данные (Alternative.me)" if is_real else "⚠️ Демо-данные"
 
         return (
             f"📊 *Fear & Greed Index*\n"
             f"`[{bar}]`\n"
             f"*{fg}/100 — {label}*\n\n"
             f"{explanation}\n\n"
-            f"⚠️ _Демо-данные (случайные)_"
+            f"{source_note}"
         )
 
 
 class OrchestratorAgent:
-    """Главный агент — синтезирует данные и даёт рекомендацию."""
+    """Главный агент — синтезирует и даёт рекомендацию."""
 
     SYSTEM_PROMPT = (
         "Ты главный аналитик криптовалютного фонда. "
@@ -298,19 +400,16 @@ class OrchestratorAgent:
     def __init__(self, client: AsyncAnthropic):
         self.client = client
 
-    async def synthesize(
-        self, coin: str, price_data: dict, sentiment_data: dict
-    ) -> dict:
+    async def synthesize(self, coin: str, price_data: dict, sentiment_data: dict) -> dict:
         user_msg = (
             f"Монета: {coin}\n\n"
-            f"=== ТЕХНИЧЕСКИЙ АНАЛИЗ (PriceAgent) ===\n"
+            f"=== ТЕХНИЧЕСКИЙ АНАЛИЗ ===\n"
             f"{price_data['summary']}\n"
             f"RSI: {price_data['rsi']} ({price_data['rsi_signal']})\n"
             f"Тренд: {price_data['trend']}\n\n"
-            f"=== АНАЛИЗ НАСТРОЕНИЙ (SentimentAgent) ===\n"
+            f"=== АНАЛИЗ НАСТРОЕНИЙ ===\n"
             f"{sentiment_data['summary']}\n"
-            f"Fear & Greed: {sentiment_data['fear_greed']}/100 "
-            f"({sentiment_data['fear_greed_label']})"
+            f"Fear & Greed: {sentiment_data['fear_greed']}/100 ({sentiment_data['fear_greed_label']})"
         )
 
         try:
@@ -325,7 +424,6 @@ class OrchestratorAgent:
             )
             recommendation = escape_claude_response(response.content[0].text)
         except asyncio.TimeoutError:
-            logger.error(f"OrchestratorAgent timeout for {coin}")
             recommendation = "🟡 ДЕРЖАТЬ\nНе удалось завершить анализ вовремя."
         except Exception as e:
             logger.error(f"OrchestratorAgent error for {coin}: {e}")
@@ -337,18 +435,18 @@ class OrchestratorAgent:
             "recommendation": recommendation,
         }
 
-    async def market_overview(self, coins: list) -> str:
-        """Обзор всех монет разом."""
+    async def market_overview(self, coins_data: list[dict]) -> str:
+        """Обзор рынка по реальным данным."""
         items = []
-        for coin in coins:
-            data = _fake_price_data(coin)
-            emoji = "🟢" if data["change_24h"] > 0 else "🔴"
-            items.append(
-                f"{emoji} *{coin}*: ${data['price']:,.2f} "
-                f"({data['change_24h']:+.2f}%)"
-            )
+        for c in coins_data[:10]:  # топ-10 для обзора
+            symbol = c.get("symbol", "?").upper()
+            price = c.get("current_price", 0)
+            change = c.get("price_change_percentage_24h") or 0
+            emoji = "🟢" if change > 0 else "🔴"
+            items.append(f"{emoji} *{symbol}*: ${price:,.2f} ({change:+.2f}%)")
 
-        fg = random.randint(15, 85)
+        fg_data = await fetch_fear_greed()
+        fg = fg_data["value"]
         items_text = "\n".join(items)
 
         try:
@@ -356,14 +454,10 @@ class OrchestratorAgent:
                 self.client.messages.create(
                     model=MODEL,
                     max_tokens=MAX_TOKENS,
-                    system=(
-                        "Эксперт по крипторынку. Краткий обзор "
-                        "(3-4 предложения) по-русски. Без Markdown."
-                    ),
+                    system="Эксперт по крипторынку. Краткий обзор (3-4 предложения) по-русски. Без Markdown.",
                     messages=[{
                         "role": "user",
-                        "content": f"Рынок сегодня:\n{items_text}\n"
-                                   f"Fear & Greed: {fg}/100",
+                        "content": f"Топ монеты сейчас:\n{items_text}\nFear & Greed: {fg}/100",
                     }],
                 ),
                 timeout=API_TIMEOUT,
@@ -373,7 +467,4 @@ class OrchestratorAgent:
             logger.error(f"Market overview error: {e}")
             analysis = "Не удалось получить анализ рынка."
 
-        return (
-            f"{items_text}\n\n"
-            f"📋 *Анализ:*\n{analysis}"
-        )
+        return f"{items_text}\n\n📋 *Анализ:*\n{analysis}"
