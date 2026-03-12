@@ -28,6 +28,7 @@ from telegram.ext import (
 
 from agents import (
     PriceAgent, SentimentAgent, OrchestratorAgent,
+    PolymarketAgent,
     get_top_coins_cached, find_coin_in_list,
 )
 from payments import (
@@ -129,6 +130,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("😱 Fear & Greed",           callback_data="fear_greed")],
         [InlineKeyboardButton("📈 Глобальный рынок",       callback_data="global_market")],
         [InlineKeyboardButton("📉 Trading / Фьючерсы",     callback_data="trading")],
+        [InlineKeyboardButton("🎯 Polymarket",              callback_data="polymarket")],
         [InlineKeyboardButton("👤 Мой аккаунт",            callback_data="my_account")],
         [InlineKeyboardButton("💳 Подписка",               callback_data="subscription")],
         [InlineKeyboardButton("ℹ️ Об агентах",             callback_data="about")],
@@ -894,6 +896,39 @@ async def trading_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Хэндлеры — аккаунт и инфо
 # ─────────────────────────────────────────────
 
+async def polymarket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Топ события Polymarket по ликвидности + AI анализ."""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    allowed, wait_sec = check_rate_limit(user_id)
+    if not allowed:
+        await safe_edit_message(query, f"⏱ Подождите {wait_sec} сек.", reply_markup=back_keyboard())
+        return
+
+    await safe_edit_message(query, "⏳ Загружаю топ события Polymarket...")
+
+    try:
+        result = await PolymarketAgent(client).get_top_events()
+        sep = "─" * 28
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Обновить", callback_data="polymarket")],
+            [InlineKeyboardButton("⬅️ Назад",   callback_data="back_main")],
+        ])
+
+        await safe_edit_message(
+            query,
+            f"🎯 *Polymarket — Топ события*\n{sep}\n\n{result}\n\n"
+            f"{sep}\n📡 _Данные: Polymarket Gamma API_\n_Не является финансовым советом_",
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        logger.error(f"polymarket error: {e}", exc_info=True)
+        await safe_edit_message(query, "❌ Ошибка при загрузке данных Polymarket.", reply_markup=back_keyboard())
+
+
 async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1051,6 +1086,7 @@ def main():
     app.add_handler(CallbackQueryHandler(trading_long,    pattern=r"^trading_long$"))
     app.add_handler(CallbackQueryHandler(trading_short,   pattern=r"^trading_short$"))
     app.add_handler(CallbackQueryHandler(trading_top,     pattern=r"^trading_top$"))
+    app.add_handler(CallbackQueryHandler(polymarket,      pattern=r"^polymarket$"))
     app.add_handler(CallbackQueryHandler(my_account,      pattern=r"^my_account$"))
     app.add_handler(CallbackQueryHandler(about,           pattern=r"^about$"))
     app.add_handler(CallbackQueryHandler(subscription,    pattern=r"^subscription$"))
