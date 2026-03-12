@@ -717,12 +717,43 @@ class PolymarketAgent:
         if not events:
             return "❌ Не удалось загрузить данные Polymarket.", [], ""
 
+        # Переводим названия событий на русский через Claude
+        titles_en = [event.get("title") or event.get("question", "?") for event in events[:10]]
+        titles_ru = {}
+        try:
+            titles_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(titles_en)])
+            response = await asyncio.wait_for(
+                self.client.messages.create(
+                    model=MODEL,
+                    max_tokens=600,
+                    system=(
+                        "Ты переводчик. Переведи названия событий рынка предсказаний на русский язык. "
+                        "Отвечай ТОЛЬКО пронумерованным списком переводов в том же формате. "
+                        "Без пояснений. Пример: 1. Победит ли Трамп выборы?"
+                    ),
+                    messages=[{"role": "user", "content": f"Переведи:\n{titles_text}"}],
+                ),
+                timeout=API_TIMEOUT,
+            )
+            for line in response.content[0].text.strip().split("\n"):
+                line = line.strip()
+                if line and line[0].isdigit():
+                    parts = line.split(".", 1)
+                    if len(parts) == 2:
+                        idx = int(parts[0].strip()) - 1
+                        translated = parts[1].strip()
+                        if 0 <= idx < len(titles_en):
+                            titles_ru[titles_en[idx]] = translated
+        except Exception as e:
+            logger.error(f"Translation error: {e}")
+
         lines = []
         events_for_ai = []
         event_buttons = []
 
         for i, event in enumerate(events[:10], 1):
-            title = event.get("title") or event.get("question", "?")
+            title_en = event.get("title") or event.get("question", "?")
+            title = titles_ru.get(title_en, title_en)  # Используем перевод если есть
             liquidity = float(event.get("liquidityClob") or event.get("liquidity") or 0)
             volume = float(event.get("volume") or 0)
             volume24 = float(event.get("volume24hr") or 0)
@@ -801,11 +832,26 @@ class PolymarketAgent:
 
     async def get_event_detail(self, event: dict) -> str:
         """Детальная информация по одному событию + AI анализ вероятностей."""
-        title = event.get("title") or event.get("question", "?")
+        title_en = event.get("title") or event.get("question", "?")
         description = event.get("description", "")
         liquidity = float(event.get("liquidityClob") or event.get("liquidity") or 0)
         volume = float(event.get("volume") or 0)
         markets = event.get("markets", [])
+
+        # Переводим название на русский
+        try:
+            resp = await asyncio.wait_for(
+                self.client.messages.create(
+                    model=MODEL,
+                    max_tokens=100,
+                    system="Переведи название события рынка предсказаний на русский. Только перевод, без пояснений.",
+                    messages=[{"role": "user", "content": title_en}],
+                ),
+                timeout=15,
+            )
+            title = resp.content[0].text.strip()
+        except Exception:
+            title = title_en
 
         liq_str = f"${liquidity/1e6:.2f}M" if liquidity >= 1e6 else f"${liquidity/1e3:.0f}K"
         vol_str = f"${volume/1e6:.2f}M" if volume >= 1e6 else f"${volume/1e3:.0f}K"
