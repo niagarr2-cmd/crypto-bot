@@ -30,7 +30,7 @@ def escape_claude_response(text: str) -> str:
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
     text = re.sub(r"`(.*?)`", r"\1", text)
     text = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", text)
-    text = text.replace("_", "\\_")
+    text = re.sub(r"#{1,6}\s", "", text)
     return text.strip()
 
 
