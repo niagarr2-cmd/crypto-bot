@@ -409,6 +409,7 @@ class SentimentAgent:
             name = coin.get("name", "?")
             symbol = coin.get("symbol", "?").upper()
             rank = coin.get("market_cap_rank") or "?"
+            score = coin.get("score", 0)
             lines.append(f"{i}. *{symbol}* — {name} (MCap rank: #{rank})")
 
         lines_text = "\n".join(lines)
