@@ -254,11 +254,11 @@ class PriceAgent:
             rsi = random.uniform(35, 65)
             is_real = False
 
-        trend = "бычий" if change_24h > 0 else ("медвежий" if change_24h < -1 else "боковой")
+        trend = "растущий" if change_24h > 0 else ("падающий" if change_24h < -1 else "боковой")
         rsi_signal = (
             "перекуплен" if rsi > 70 else
             "перепродан" if rsi < 30 else
-            "нейтрален"
+            "нейтральный"
         )
 
         user_msg = (
@@ -385,12 +385,12 @@ class SentimentAgent:
             explanation = escape_claude_response(response.content[0].text)
         except Exception as e:
             logger.error(f"Fear&Greed analysis error: {e}")
-            explanation = "Не удалось получить анализ. Попробуйте позже."
+            explanation = "Анализ временно недоступен. Попробуйте позже."
 
-        source_note = "✅ Реальные данные (Alternative.me)" if is_real else "⚠️ Демо-данные"
+        source_note = "✅ Реальные данные (Alternative.me)" if is_real else "⚠️ Демонстрационные данные"
 
         return (
-            f"📊 *Fear & Greed Index*\n"
+            f"📊 *Индекс страха и жадности*\n"
             f"`[{bar}]`\n"
             f"*{fg}/100 — {label}*\n\n"
             f"{explanation}\n\n"
@@ -401,7 +401,7 @@ class SentimentAgent:
         coins = await fetch_trending_coins()
 
         if not coins:
-            return "❌ Не удалось загрузить trending монеты."
+            return "❌ Не удалось загрузить трендовые монеты."
 
         lines = []
         for i, item in enumerate(coins[:7], 1):
@@ -430,7 +430,7 @@ class SentimentAgent:
             comment = escape_claude_response(response.content[0].text)
         except Exception as e:
             logger.error(f"Trending comment error: {e}")
-            comment = "Не удалось получить комментарий."
+            comment = "Комментарий временно недоступен."
 
         return f"{lines_text}\n\n💬 *Комментарий:*\n{comment}"
 
@@ -515,7 +515,7 @@ class OrchestratorAgent:
             analysis = escape_claude_response(response.content[0].text)
         except Exception as e:
             logger.error(f"Market overview error: {e}")
-            analysis = "Не удалось получить анализ рынка."
+            analysis = "Анализ рынка временно недоступен."
 
         return f"{items_text}\n\n📋 *Анализ:*\n{analysis}"
 
@@ -567,13 +567,13 @@ class OrchestratorAgent:
             analysis = escape_claude_response(response.content[0].text)
         except Exception as e:
             logger.error(f"Global market analysis error: {e}")
-            analysis = "Не удалось получить анализ."
+            analysis = "Анализ временно недоступен."
 
         return f"{summary_lines}\n\n📋 *Анализ:*\n{analysis}"
 
     async def futures_signals(self, coins: list[dict], direction: str = "long") -> str:
-        direction_ru = "LONG 🟢" if direction == "long" else "SHORT 🔴"
-        condition = "роста" if direction == "long" else "падения"
+        direction_ru = "ЛОНГ 📈" if direction == "long" else "ШОРТ 📉"
+        condition = "роста" if direction == "long" else "снижения"
 
         candidates = []
         for c in coins[:20]:
@@ -599,8 +599,8 @@ class OrchestratorAgent:
             f"Стоп-лосс: $цена\n"
             f"Тейк-профит: $цена\n"
             f"Уверенность: X%\n"
-            f"Причина: 1 предложение\n\n"
-            f"Без Markdown. Разделяй сигналы линией ---"
+            f"Причина: одно предложение\n\n"
+            f"Без Markdown. Сигналы разделяй линией ---"
         )
 
         try:
@@ -664,7 +664,7 @@ class OrchestratorAgent:
             comment = escape_claude_response(response.content[0].text)
         except Exception as e:
             logger.error(f"top_futures error: {e}")
-            comment = "Не удалось получить комментарий."
+            comment = "Комментарий временно недоступен."
 
         return f"{items_text}\n\n💬 *Комментарий:*\n{comment}"
 
@@ -760,7 +760,7 @@ class PolymarketAgent:
                 if outcome_lines:
                     break
 
-            outcomes_text = "\n".join(outcome_lines) if outcome_lines else "   📊 Нет данных об исходах"
+            outcomes_text = "\n".join(outcome_lines) if outcome_lines else "   📊 Данные об исходах недоступны"
 
             line = (
                 f"*{i}. {title}*\n"
@@ -795,12 +795,12 @@ class PolymarketAgent:
             analysis = escape_claude_response(response.content[0].text)
         except Exception as e:
             logger.error(f"Polymarket AI error: {e}")
-            analysis = "Не удалось получить AI анализ."
+            analysis = "AI анализ временно недоступен."
 
         return events_text, event_buttons, analysis
 
     async def get_event_detail(self, event: dict) -> str:
-        """Детальная информация по одному событию."""
+        """Детальная информация по одному событию + AI анализ вероятностей."""
         title = event.get("title") or event.get("question", "?")
         description = event.get("description", "")
         liquidity = float(event.get("liquidityClob") or event.get("liquidity") or 0)
@@ -811,12 +811,19 @@ class PolymarketAgent:
         vol_str = f"${volume/1e6:.2f}M" if volume >= 1e6 else f"${volume/1e3:.0f}K"
         sep = "─" * 28
 
-        lines = [f"🎯 *{title}*", sep, f"💧 Ликвидность: *{liq_str}* | 📊 Объём: *{vol_str}*"]
+        lines = [
+            f"🎯 *{title}*",
+            sep,
+            f"💧 Ликвидность: *{liq_str}*  |  📊 Объём: *{vol_str}*",
+        ]
 
         if description:
             lines.append(f"\n📋 _{description[:250]}_")
 
         lines.append("")
+
+        # Собираем все исходы для AI анализа
+        all_outcomes_for_ai = []
 
         for m in markets[:8]:
             q = m.get("question", "")
@@ -837,28 +844,69 @@ class PolymarketAgent:
                 lines.append(f"❓ *{q}*")
 
             if outcomes and prices and len(outcomes) == len(prices):
+                outcome_pairs = []
                 for o, p in zip(outcomes, prices):
                     try:
                         pct = round(float(p) * 100)
-                        bar = "█" * round(pct/10) + "░" * (10 - round(pct/10))
-                        emoji = "🟢" if o.lower() in ["yes","да"] else ("🔴" if o.lower() in ["no","нет"] else "🔵")
-                        lines.append(f"{emoji} *{o}*: {pct}% `{bar}`")
+                        bar_filled = round(pct / 10)
+                        bar = "█" * bar_filled + "░" * (10 - bar_filled)
+
+                        if o.lower() in ["yes", "да"]:
+                            emoji = "🟢"
+                        elif o.lower() in ["no", "нет"]:
+                            emoji = "🔴"
+                        else:
+                            # Для нумерических исходов — цвет по вероятности
+                            emoji = "🟢" if pct >= 50 else "🔴"
+
+                        lines.append(f"{emoji} *{o}*: {pct}%  `{bar}`")
+                        outcome_pairs.append(f"{o}: {pct}%")
                     except Exception:
                         pass
+
+                if outcome_pairs:
+                    all_outcomes_for_ai.append(
+                        f"Вопрос: {q or title}\nИсходы: {' | '.join(outcome_pairs)}"
+                    )
             lines.append("")
 
-        try:
-            response = await asyncio.wait_for(
-                self.client.messages.create(
-                    model=MODEL,
-                    max_tokens=300,
-                    system="Эксперт крипторынка. Кратко (2-3 предложения) объясни как событие влияет на крипту. По-русски. Без Markdown.",
-                    messages=[{"role": "user", "content": f"Событие Polymarket: {title}. Как влияет на крипту?"}],
-                ),
-                timeout=API_TIMEOUT,
-            )
-            lines.append(f"🤖 *AI анализ:*\n{escape_claude_response(response.content[0].text)}")
-        except Exception:
-            pass
+        # AI анализ вероятностей
+        lines.append(sep)
+        lines.append("🤖 *Анализ вероятностей от AI:*")
+        lines.append("")
+
+        if all_outcomes_for_ai:
+            outcomes_prompt = "\n\n".join(all_outcomes_for_ai)
+            try:
+                response = await asyncio.wait_for(
+                    self.client.messages.create(
+                        model=MODEL,
+                        max_tokens=400,
+                        system=(
+                            "Ты эксперт по рынкам предсказаний и крипторынку. "
+                            "Тебе дают данные о событии с вероятностями исходов. "
+                            "Твоя задача:\n"
+                            "1. Объясни по-русски что означает каждый исход простыми словами\n"
+                            "2. Укажи на какой исход выгоднее ставить и почему\n"
+                            "3. Объясни как это событие влияет на крипторынок\n"
+                            "Пиши кратко — 4-5 предложений. Без Markdown. По-русски."
+                        ),
+                        messages=[{
+                            "role": "user",
+                            "content": (
+                                f"Событие: {title}\n\n"
+                                f"{outcomes_prompt}\n\n"
+                                f"Проанализируй вероятности и дай рекомендацию."
+                            ),
+                        }],
+                    ),
+                    timeout=API_TIMEOUT,
+                )
+                lines.append(escape_claude_response(response.content[0].text))
+            except Exception as e:
+                logger.error(f"Polymarket detail AI error: {e}")
+                lines.append("Анализ временно недоступен. Попробуйте позже.")
+        else:
+            lines.append("Нет данных об исходах для анализа.")
 
         return "\n".join(lines)

@@ -183,18 +183,18 @@ def coins_keyboard(coins: list[dict], page: int = 0) -> InlineKeyboardMarkup:
 def trading_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📈 Long сигналы",  callback_data="trading_long"),
-            InlineKeyboardButton("📉 Short сигналы", callback_data="trading_short"),
+            InlineKeyboardButton("📈 Лонг сигналы",  callback_data="trading_long"),
+            InlineKeyboardButton("📉 Шорт сигналы", callback_data="trading_short"),
         ],
         [InlineKeyboardButton("🏆 Топ по объёму",    callback_data="trading_top")],
-        [InlineKeyboardButton("⬅️ Главное меню",     callback_data="back_main")],
+        [InlineKeyboardButton("🏠 Главное меню",     callback_data="back_main")],
     ])
 
 
 def subscription_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⭐️ Premium  •  199₽/мес", callback_data="buy_premium")],
-        [InlineKeyboardButton("💎 VIP  •  499₽/мес",      callback_data="buy_vip")],
+        [InlineKeyboardButton("⭐️ Премиум  •  199₽/мес", callback_data="buy_premium")],
+        [InlineKeyboardButton("💎 ВИП  •  499₽/мес",      callback_data="buy_vip")],
         [InlineKeyboardButton("⬅️ Назад",                 callback_data="back_main")],
     ])
 
@@ -495,7 +495,7 @@ async def choose_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    await safe_edit_message(query, "⏳ Загружаю топ-50 монет...")
+    await safe_edit_message(query, "⏳ Загружаю топ‑50 монет...")
 
     coins = await get_top_coins_cached(50)
     if not coins:
@@ -544,7 +544,7 @@ async def analyze_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed:
         await safe_edit_message(
             query,
-            f"⏱ Подождите {wait_sec} сек перед следующим запросом.",
+            f"⏱ Подождите {wait_sec} сек. перед следующим запросом.",
             reply_markup=back_keyboard("choose_coin"),
         )
         return
@@ -558,7 +558,7 @@ async def analyze_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Ваш тариф: {PLAN_CONFIG[plan]['name']} — 1 анализ/день.\n\n"
             f"Для безлимитного доступа оформите Premium или VIP подписку 👇",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 Оформить подписку", callback_data="subscription")],
+                [InlineKeyboardButton("💎 Оформить подписку", callback_data="subscription")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="back_main")],
             ]),
         )
@@ -568,8 +568,8 @@ async def analyze_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query,
         f"⏳ Агенты анализируют *{coin}*...\n\n"
         f"📡 Загружаю данные с CoinGecko\n"
-        f"🔄 PriceAgent + SentimentAgent работают параллельно\n"
-        f"⏱ Обычно 30-60 секунд",
+        f"🔄 Агенты работают параллельно\n"
+        f"⏱ Обычно 30‑60 секунд",
     )
 
     try:
@@ -613,8 +613,8 @@ async def analyze_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🪙 Другая монета", callback_data="choose_coin")],
-            [InlineKeyboardButton("⬅️ Главное меню", callback_data="back_main")],
+            [InlineKeyboardButton("🔍 Другая монета", callback_data="choose_coin")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
         ])
 
         await safe_edit_message(query, text, reply_markup=keyboard)
@@ -642,7 +642,7 @@ async def market_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_message(query, f"⏱ Подождите {wait_sec} сек.", reply_markup=back_keyboard())
         return
 
-    await safe_edit_message(query, "⏳ Загружаю данные рынка с CoinGecko...")
+    await safe_edit_message(query, "⏳ Загружаю данные рынка...")
 
     try:
         coins = await get_top_coins_cached(50)
@@ -666,7 +666,7 @@ async def market_overview(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"market_overview error: {e}", exc_info=True)
-        await safe_edit_message(query, "❌ Ошибка при получении обзора.", reply_markup=back_keyboard())
+        await safe_edit_message(query, "❌ Ошибка загрузки данных.", reply_markup=back_keyboard())
 
 
 async def trending(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -679,7 +679,7 @@ async def trending(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_message(query, f"⏱ Подождите {wait_sec} сек.", reply_markup=back_keyboard())
         return
 
-    await safe_edit_message(query, "⏳ Загружаю trending монеты...")
+    await safe_edit_message(query, "⏳ Загружаю трендовые монеты...")
 
     try:
         trending_text = await SentimentAgent(client).trending_coins()
@@ -697,7 +697,7 @@ async def trending(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"trending error: {e}", exc_info=True)
-        await safe_edit_message(query, "❌ Ошибка при получении trending.", reply_markup=back_keyboard())
+        await safe_edit_message(query, "❌ Ошибка при загрузке трендов.", reply_markup=back_keyboard())
 
 
 async def fear_greed(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -710,7 +710,7 @@ async def fear_greed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_message(query, f"⏱ Подождите {wait_sec} сек.", reply_markup=back_keyboard())
         return
 
-    await safe_edit_message(query, "⏳ Получаю Fear & Greed Index...")
+    await safe_edit_message(query, "⏳ Загружаю индекс Fear & Greed...")
 
     try:
         fg_text = await SentimentAgent(client).fear_greed_only()
@@ -728,7 +728,7 @@ async def fear_greed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"fear_greed error: {e}", exc_info=True)
-        await safe_edit_message(query, "❌ Ошибка при получении индекса.", reply_markup=back_keyboard())
+        await safe_edit_message(query, "❌ Ошибка загрузки индекса.", reply_markup=back_keyboard())
 
 
 async def global_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -776,11 +776,11 @@ async def trading(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user_id) and not can_use_trading(user_id):
         await safe_edit_message(
             query,
-            "🔒 *Trading / Фьючерсы*\n\n"
-            "Этот раздел доступен только для подписчиков *Premium* и *VIP*.\n\n"
-            "Получите доступ к торговым сигналам с входом, стоп-лоссом и тейк-профитом!",
+            "🔒 *Торговля / Фьючерсы*\n\n"
+            "Этот раздел доступен только для подписчиков *Премиум* и *ВИП*.\n\n"
+            "Получите торговые сигналы с точкой входа, стоп-лоссом и тейк-профитом!",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 Оформить подписку", callback_data="subscription")],
+                [InlineKeyboardButton("💎 Оформить подписку", callback_data="subscription")],
                 [InlineKeyboardButton("⬅️ Назад",            callback_data="back_main")],
             ]),
         )
@@ -812,7 +812,7 @@ async def trading_long(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_message(query, f"⏱ Подождите {wait_sec} сек.", reply_markup=back_keyboard("trading"))
         return
 
-    await safe_edit_message(query, "⏳ Анализирую Long возможности...")
+    await safe_edit_message(query, "⏳ Анализирую возможности для лонга...")
 
     try:
         coins = await get_top_coins_cached(50)
@@ -822,7 +822,7 @@ async def trading_long(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 Обновить",      callback_data="trading_long")],
             [InlineKeyboardButton("🔴 Short сигналы", callback_data="trading_short")],
-            [InlineKeyboardButton("⬅️ Trading меню",  callback_data="trading")],
+            [InlineKeyboardButton("⬅️ Торговля",  callback_data="trading")],
         ])
 
         await safe_edit_message(
@@ -833,7 +833,7 @@ async def trading_long(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"trading_long error: {e}", exc_info=True)
-        await safe_edit_message(query, "❌ Ошибка при генерации сигналов.", reply_markup=back_keyboard("trading"))
+        await safe_edit_message(query, "❌ Ошибка генерации сигналов.", reply_markup=back_keyboard("trading"))
 
 
 async def trading_short(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -850,7 +850,7 @@ async def trading_short(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_message(query, f"⏱ Подождите {wait_sec} сек.", reply_markup=back_keyboard("trading"))
         return
 
-    await safe_edit_message(query, "⏳ Анализирую Short возможности...")
+    await safe_edit_message(query, "⏳ Анализирую возможности для шорта...")
 
     try:
         coins = await get_top_coins_cached(50)
@@ -860,7 +860,7 @@ async def trading_short(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 Обновить",     callback_data="trading_short")],
             [InlineKeyboardButton("🟢 Long сигналы", callback_data="trading_long")],
-            [InlineKeyboardButton("⬅️ Trading меню", callback_data="trading")],
+            [InlineKeyboardButton("⬅️ Торговля", callback_data="trading")],
         ])
 
         await safe_edit_message(
@@ -871,7 +871,7 @@ async def trading_short(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"trading_short error: {e}", exc_info=True)
-        await safe_edit_message(query, "❌ Ошибка при генерации сигналов.", reply_markup=back_keyboard("trading"))
+        await safe_edit_message(query, "❌ Ошибка генерации сигналов.", reply_markup=back_keyboard("trading"))
 
 
 async def trading_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -897,7 +897,7 @@ async def trading_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 Обновить",     callback_data="trading_top")],
-            [InlineKeyboardButton("⬅️ Trading меню", callback_data="trading")],
+            [InlineKeyboardButton("⬅️ Торговля", callback_data="trading")],
         ])
 
         await safe_edit_message(
@@ -908,7 +908,7 @@ async def trading_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"trading_top error: {e}", exc_info=True)
-        await safe_edit_message(query, "❌ Ошибка при загрузке данных.", reply_markup=back_keyboard("trading"))
+        await safe_edit_message(query, "❌ Ошибка загрузки данных.", reply_markup=back_keyboard("trading"))
 
 
 # ─────────────────────────────────────────────
@@ -1053,18 +1053,21 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     await safe_edit_message(
         query,
-        "ℹ️ *О системе агентов*\n\n"
-        "📈 *PriceAgent*\n"
-        "Реальные данные с CoinGecko: цена, объём, изменение 24ч, RSI(14), High/Low уровни.\n\n"
-        "🧠 *SentimentAgent*\n"
-        "Fear & Greed Index от Alternative.me (обновляется ежедневно).\n\n"
-        "🎯 *OrchestratorAgent*\n"
-        "Синтезирует данные обоих агентов, даёт рекомендацию с уровнем уверенности.\n\n"
-        "📉 *Trading Agent* _(Premium/VIP)_\n"
-        "Анализирует фьючерсный рынок, генерирует Long/Short сигналы с входом, стоп-лоссом и тейк-профитом.\n\n"
-        "⚡️ Агенты работают *параллельно*.\n"
-        "🤖 Все агенты на базе *Claude* от Anthropic.\n"
-        "📡 Данные: CoinGecko API + Alternative.me",
+        "ℹ️ *О боте*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🔍 *Анализ монеты*\n"
+        "Реальные данные с CoinGecko: цена, объём, RSI(14), уровни за 24ч.\n\n"
+        "🧠 *Настроения рынка*\n"
+        "Индекс страха и жадности от Alternative.me, обновляется каждый день.\n\n"
+        "🎯 *Итоговая рекомендация*\n"
+        "Объединяет данные агентов и выдаёт сигнал с уровнем уверенности.\n\n"
+        "⚡️ *Торговые сигналы* _(Премиум / ВИП)_\n"
+        "Лонг и шорт сигналы с точкой входа, стоп-лоссом и тейк-профитом.\n\n"
+        "🎯 *Polymarket*\n"
+        "Топ события по ликвидности с вероятностями исходов и AI анализом.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🤖 Все агенты работают на базе *Claude* от Anthropic\n"
+        "📡 Данные: CoinGecko + Alternative.me + Polymarket",
         reply_markup=back_keyboard(),
     )
 
