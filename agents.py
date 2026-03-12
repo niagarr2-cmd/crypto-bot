@@ -703,75 +703,79 @@ async def fetch_polymarket_top(limit: int = 10) -> list[dict]:
         return []
 
 
+
 class PolymarketAgent:
     """Агент анализа рынка предсказаний Polymarket."""
 
     def __init__(self, client: AsyncAnthropic):
         self.client = client
 
-    async def get_top_events(self) -> str:
-        """Топ событий по ликвидности + AI анализ влияния на крипту."""
+    async def get_top_events(self) -> tuple[str, list[dict], str]:
+        """Топ событий по ликвидности."""
         events = await fetch_polymarket_top(10)
 
         if not events:
-            return "❌ Не удалось загрузить данные Polymarket."
+            return "❌ Не удалось загрузить данные Polymarket.", [], ""
 
         lines = []
         events_for_ai = []
+        event_buttons = []
 
         for i, event in enumerate(events[:10], 1):
             title = event.get("title") or event.get("question", "?")
             liquidity = float(event.get("liquidityClob") or event.get("liquidity") or 0)
             volume = float(event.get("volume") or 0)
+            volume24 = float(event.get("volume24hr") or 0)
 
-            # Исходы
+            liq_str = f"${liquidity/1e6:.1f}M" if liquidity >= 1e6 else f"${liquidity/1e3:.0f}K"
+            vol_str = f"${volume/1e6:.1f}M" if volume >= 1e6 else f"${volume/1e3:.0f}K"
+            vol24_str = f"${volume24/1e6:.1f}M" if volume24 >= 1e6 else f"${volume24/1e3:.0f}K"
+
             markets = event.get("markets", [])
-            outcomes_str = ""
-            if markets:
-                m = markets[0]
+            outcome_lines = []
+
+            for m in markets[:3]:
                 outcomes = m.get("outcomes", "[]")
+                prices = m.get("outcomePrices", "[]")
                 if isinstance(outcomes, str):
                     try:
-                        import json as _json
-                        outcomes = _json.loads(outcomes)
+                        import json as _j; outcomes = _j.loads(outcomes)
                     except Exception:
                         outcomes = []
-                prices = m.get("outcomePrices", "[]")
                 if isinstance(prices, str):
                     try:
-                        import json as _json
-                        prices = _json.loads(prices)
+                        import json as _j; prices = _j.loads(prices)
                     except Exception:
                         prices = []
 
                 if outcomes and prices and len(outcomes) == len(prices):
-                    parts = []
                     for o, p in zip(outcomes[:2], prices[:2]):
                         try:
                             pct = round(float(p) * 100)
-                            parts.append(f"{o}: {pct}%")
+                            bar = "█" * round(pct/10) + "░" * (10 - round(pct/10))
+                            emoji = "🟢" if o.lower() in ["yes","да"] else ("🔴" if o.lower() in ["no","нет"] else "🔵")
+                            outcome_lines.append(f"   {emoji} {o}: *{pct}%* `{bar}`")
                         except Exception:
                             pass
-                    outcomes_str = " | ".join(parts)
+                if outcome_lines:
+                    break
 
-            liq_m = liquidity / 1e6 if liquidity >= 1e6 else liquidity / 1e3
-            liq_unit = "M" if liquidity >= 1e6 else "K"
-            vol_m = volume / 1e6 if volume >= 1e6 else volume / 1e3
-            vol_unit = "M" if volume >= 1e6 else "K"
+            outcomes_text = "\n".join(outcome_lines) if outcome_lines else "   📊 Нет данных об исходах"
 
             line = (
-                f"{i}. *{title}*\n"
-                f"   💧 Ликвидность: ${liq_m:.1f}{liq_unit}"
-                f" | 📊 Объём: ${vol_m:.1f}{vol_unit}"
+                f"*{i}. {title}*\n"
+                f"   💧 {liq_str} ликв. | 📊 {vol_str} объём | 24ч: {vol24_str}\n"
+                f"{outcomes_text}"
             )
-            if outcomes_str:
-                line += f"\n   📈 {outcomes_str}"
-
             lines.append(line)
-            events_for_ai.append(f"{i}. {title} (ликвидность ${liq_m:.1f}{liq_unit})")
+            events_for_ai.append(f"{i}. {title} (ликв. {liq_str})")
+            event_buttons.append({
+                "index": i,
+                "title": title[:35],
+                "event": event,
+            })
 
         events_text = "\n\n".join(lines)
-        events_for_prompt = "\n".join(events_for_ai)
 
         try:
             response = await asyncio.wait_for(
@@ -780,28 +784,81 @@ class PolymarketAgent:
                     max_tokens=MAX_TOKENS,
                     system=(
                         "Ты эксперт по крипторынку и рынкам предсказаний. "
-                        "Проанализируй топ события Polymarket и объясни КРАТКО (3-4 предложения) "
+                        "Проанализируй топ события Polymarket КРАТКО (3 предложения) "
                         "как они могут повлиять на крипторынок. "
-                        "Отвечай по-русски. Без Markdown."
+                        "По-русски. Без Markdown."
                     ),
-                    messages=[{
-                        "role": "user",
-                        "content": (
-                            f"Топ события Polymarket по ликвидности:\n{events_for_prompt}\n\n"
-                            f"Как эти события могут повлиять на крипторынок?"
-                        ),
-                    }],
+                    messages=[{"role": "user", "content": f"Топ события Polymarket:\n{'\n'.join(events_for_ai)}\nКак влияют на крипту?"}],
                 ),
                 timeout=API_TIMEOUT,
             )
             analysis = escape_claude_response(response.content[0].text)
         except Exception as e:
-            logger.error(f"Polymarket AI analysis error: {e}")
+            logger.error(f"Polymarket AI error: {e}")
             analysis = "Не удалось получить AI анализ."
 
+        return events_text, event_buttons, analysis
+
+    async def get_event_detail(self, event: dict) -> str:
+        """Детальная информация по одному событию."""
+        title = event.get("title") or event.get("question", "?")
+        description = event.get("description", "")
+        liquidity = float(event.get("liquidityClob") or event.get("liquidity") or 0)
+        volume = float(event.get("volume") or 0)
+        markets = event.get("markets", [])
+
+        liq_str = f"${liquidity/1e6:.2f}M" if liquidity >= 1e6 else f"${liquidity/1e3:.0f}K"
+        vol_str = f"${volume/1e6:.2f}M" if volume >= 1e6 else f"${volume/1e3:.0f}K"
         sep = "─" * 28
-        return (
-            f"{events_text}\n\n"
-            f"{sep}\n"
-            f"🤖 *AI анализ влияния на крипту:*\n{analysis}"
-        )
+
+        lines = [f"🎯 *{title}*", sep, f"💧 Ликвидность: *{liq_str}* | 📊 Объём: *{vol_str}*"]
+
+        if description:
+            lines.append(f"\n📋 _{description[:250]}_")
+
+        lines.append("")
+
+        for m in markets[:8]:
+            q = m.get("question", "")
+            outcomes = m.get("outcomes", "[]")
+            prices = m.get("outcomePrices", "[]")
+            if isinstance(outcomes, str):
+                try:
+                    import json as _j; outcomes = _j.loads(outcomes)
+                except Exception:
+                    outcomes = []
+            if isinstance(prices, str):
+                try:
+                    import json as _j; prices = _j.loads(prices)
+                except Exception:
+                    prices = []
+
+            if q and q != title:
+                lines.append(f"❓ *{q}*")
+
+            if outcomes and prices and len(outcomes) == len(prices):
+                for o, p in zip(outcomes, prices):
+                    try:
+                        pct = round(float(p) * 100)
+                        bar = "█" * round(pct/10) + "░" * (10 - round(pct/10))
+                        emoji = "🟢" if o.lower() in ["yes","да"] else ("🔴" if o.lower() in ["no","нет"] else "🔵")
+                        lines.append(f"{emoji} *{o}*: {pct}% `{bar}`")
+                    except Exception:
+                        pass
+            lines.append("")
+
+        try:
+            response = await asyncio.wait_for(
+                self.client.messages.create(
+                    model=MODEL,
+                    max_tokens=300,
+                    system="Эксперт крипторынка. Кратко (2-3 предложения) объясни как событие влияет на крипту. По-русски. Без Markdown.",
+                    messages=[{"role": "user", "content": f"Событие Polymarket: {title}. Как влияет на крипту?"}],
+                ),
+                timeout=API_TIMEOUT,
+            )
+            lines.append(f"🤖 *AI анализ:*\n{escape_claude_response(response.content[0].text)}")
+        except Exception:
+            pass
+
+        return "\n".join(lines)

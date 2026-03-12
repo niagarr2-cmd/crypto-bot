@@ -124,16 +124,26 @@ def increment_daily_usage(user_id: int):
 
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Анализ монеты (топ-50)", callback_data="choose_coin")],
-        [InlineKeyboardButton("🌐 Обзор рынка",            callback_data="market_overview")],
-        [InlineKeyboardButton("🔥 Trending",               callback_data="trending")],
-        [InlineKeyboardButton("😱 Fear & Greed",           callback_data="fear_greed")],
-        [InlineKeyboardButton("📈 Глобальный рынок",       callback_data="global_market")],
-        [InlineKeyboardButton("📉 Trading / Фьючерсы",     callback_data="trading")],
-        [InlineKeyboardButton("🎯 Polymarket",              callback_data="polymarket")],
-        [InlineKeyboardButton("👤 Мой аккаунт",            callback_data="my_account")],
-        [InlineKeyboardButton("💳 Подписка",               callback_data="subscription")],
-        [InlineKeyboardButton("ℹ️ Об агентах",             callback_data="about")],
+        [
+            InlineKeyboardButton("🔍 Анализ монеты",   callback_data="choose_coin"),
+            InlineKeyboardButton("🌍 Обзор рынка",     callback_data="market_overview"),
+        ],
+        [
+            InlineKeyboardButton("🚀 Trending",        callback_data="trending"),
+            InlineKeyboardButton("😨 Fear & Greed",    callback_data="fear_greed"),
+        ],
+        [
+            InlineKeyboardButton("🌐 Глобал. рынок",   callback_data="global_market"),
+            InlineKeyboardButton("⚡️ Trading",         callback_data="trading"),
+        ],
+        [
+            InlineKeyboardButton("🎯 Polymarket",      callback_data="polymarket"),
+            InlineKeyboardButton("💎 Подписка",        callback_data="subscription"),
+        ],
+        [
+            InlineKeyboardButton("👤 Мой аккаунт",    callback_data="my_account"),
+            InlineKeyboardButton("ℹ️ О боте",          callback_data="about"),
+        ],
     ])
 
 
@@ -172,18 +182,20 @@ def coins_keyboard(coins: list[dict], page: int = 0) -> InlineKeyboardMarkup:
 
 def trading_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🟢 Long сигналы",  callback_data="trading_long")],
-        [InlineKeyboardButton("🔴 Short сигналы", callback_data="trading_short")],
-        [InlineKeyboardButton("📊 Топ фьючерсы",  callback_data="trading_top")],
-        [InlineKeyboardButton("⬅️ Назад",         callback_data="back_main")],
+        [
+            InlineKeyboardButton("📈 Long сигналы",  callback_data="trading_long"),
+            InlineKeyboardButton("📉 Short сигналы", callback_data="trading_short"),
+        ],
+        [InlineKeyboardButton("🏆 Топ по объёму",    callback_data="trading_top")],
+        [InlineKeyboardButton("⬅️ Главное меню",     callback_data="back_main")],
     ])
 
 
 def subscription_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⭐️ Premium — 199₽/мес", callback_data="buy_premium")],
-        [InlineKeyboardButton("💎 VIP — 499₽/мес",      callback_data="buy_vip")],
-        [InlineKeyboardButton("⬅️ Назад",               callback_data="back_main")],
+        [InlineKeyboardButton("⭐️ Premium  •  199₽/мес", callback_data="buy_premium")],
+        [InlineKeyboardButton("💎 VIP  •  499₽/мес",      callback_data="buy_vip")],
+        [InlineKeyboardButton("⬅️ Назад",                 callback_data="back_main")],
     ])
 
 
@@ -230,15 +242,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_note = "👑 _Режим администратора_\n" if is_admin(user_id) else ""
 
     await update.message.reply_text(
-        "🤖 *Crypto AI Agents Bot*\n\n"
+        "⚡️ *Crypto AI Agents*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"{admin_note}"
-        "Система из 3 AI-агентов на базе Claude:\n"
-        "• 📈 *PriceAgent* — технический анализ\n"
-        "• 🧠 *SentimentAgent* — настроения рынка\n"
-        "• 🎯 *OrchestratorAgent* — итоговая рекомендация\n\n"
-        "📡 Данные: CoinGecko API (реальные)\n"
-        f"💳 Ваш тариф: *{plan_name}*\n\n"
-        "Выберите действие:",
+        "Твой персональный крипто-аналитик на базе Claude AI.\n\n"
+        "🔍 Что умеет бот:\n"
+        "› Анализ любой монеты из топ-50\n"
+        "› Торговые сигналы Long / Short\n"
+        "› События Polymarket с вероятностями\n"
+        "› Fear & Greed + Trending в реальном времени\n"
+        "› Глобальный обзор всего крипторынка\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"💳 Тариф: *{plan_name}*  •  📡 CoinGecko API\n\n"
+        "👇 Выбери раздел:",
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
     )
@@ -249,7 +265,7 @@ async def back_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     await safe_edit_message(
         query,
-        "🤖 *Crypto AI Agents Bot*\n\nВыберите действие:",
+        "⚡️ *Crypto AI Agents*\n━━━━━━━━━━━━━━━━━━━━\n\n👇 Выбери раздел:",
         reply_markup=main_keyboard(),
     )
 
@@ -772,9 +788,12 @@ async def trading(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_edit_message(
         query,
-        "📉 *Trading / Фьючерсы*\n\n"
-        "AI-агенты анализируют рынок фьючерсов и генерируют торговые сигналы.\n\n"
-        "Выберите тип сигнала:",
+        "⚡️ *Trading / Фьючерсы*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "AI анализирует топ-50 монет и генерирует\n"
+        "точки входа с уровнями стоп-лосс и тейк-профит.\n\n"
+        "🔒 *Только для Premium и VIP*\n\n"
+        "👇 Выбери тип сигнала:",
         reply_markup=trading_keyboard(),
     )
 
@@ -910,23 +929,72 @@ async def polymarket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_edit_message(query, "⏳ Загружаю топ события Polymarket...")
 
     try:
-        result = await PolymarketAgent(client).get_top_events()
+        events_text, event_buttons, analysis = await PolymarketAgent(client).get_top_events()
         sep = "─" * 28
 
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Обновить", callback_data="polymarket")],
-            [InlineKeyboardButton("⬅️ Назад",   callback_data="back_main")],
-        ])
+        # Кнопки для каждого события
+        rows = []
+        for btn in event_buttons:
+            idx = btn["index"]
+            title = btn["title"]
+            rows.append([InlineKeyboardButton(
+                f"{idx}. {title}",
+                callback_data=f"poly_event_{idx}"
+            )])
+
+        rows.append([InlineKeyboardButton("🔄 Обновить", callback_data="polymarket")])
+        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_main")])
+
+        # Сохраняем события для детального просмотра
+        context.bot_data["poly_events"] = event_buttons
 
         await safe_edit_message(
             query,
-            f"🎯 *Polymarket — Топ события*\n{sep}\n\n{result}\n\n"
-            f"{sep}\n📡 _Данные: Polymarket Gamma API_\n_Не является финансовым советом_",
-            reply_markup=keyboard,
+            f"🎯 *Polymarket — Топ события*\n{sep}\n\n"
+            f"{events_text}\n\n{sep}\n"
+            f"🤖 *AI анализ влияния на крипту:*\n{analysis}\n\n"
+            f"📡 _Данные: Polymarket_ | _Не фин. совет_\n\n"
+            f"👇 *Нажми на событие для деталей:*",
+            reply_markup=InlineKeyboardMarkup(rows),
         )
     except Exception as e:
         logger.error(f"polymarket error: {e}", exc_info=True)
         await safe_edit_message(query, "❌ Ошибка при загрузке данных Polymarket.", reply_markup=back_keyboard())
+
+
+async def poly_event_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Детальная информация по выбранному событию Polymarket."""
+    query = update.callback_query
+    await query.answer()
+
+    idx = int(query.data.split("_")[-1])
+    event_buttons = context.bot_data.get("poly_events", [])
+
+    event_data = None
+    for btn in event_buttons:
+        if btn["index"] == idx:
+            event_data = btn["event"]
+            break
+
+    if not event_data:
+        await safe_edit_message(query, "❌ Событие не найдено. Обновите список.", reply_markup=back_keyboard("polymarket"))
+        return
+
+    await safe_edit_message(query, "⏳ Загружаю детали события...")
+
+    try:
+        detail = await PolymarketAgent(client).get_event_detail(event_data)
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ К списку событий", callback_data="polymarket")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")],
+        ])
+
+        await safe_edit_message(query, detail, reply_markup=keyboard)
+
+    except Exception as e:
+        logger.error(f"poly_event_detail error: {e}", exc_info=True)
+        await safe_edit_message(query, "❌ Ошибка при загрузке деталей.", reply_markup=back_keyboard("polymarket"))
 
 
 async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1086,8 +1154,9 @@ def main():
     app.add_handler(CallbackQueryHandler(trading_long,    pattern=r"^trading_long$"))
     app.add_handler(CallbackQueryHandler(trading_short,   pattern=r"^trading_short$"))
     app.add_handler(CallbackQueryHandler(trading_top,     pattern=r"^trading_top$"))
-    app.add_handler(CallbackQueryHandler(polymarket,      pattern=r"^polymarket$"))
-    app.add_handler(CallbackQueryHandler(my_account,      pattern=r"^my_account$"))
+    app.add_handler(CallbackQueryHandler(polymarket,         pattern=r"^polymarket$"))
+    app.add_handler(CallbackQueryHandler(poly_event_detail,  pattern=r"^poly_event_\d+$"))
+    app.add_handler(CallbackQueryHandler(my_account,         pattern=r"^my_account$"))
     app.add_handler(CallbackQueryHandler(about,           pattern=r"^about$"))
     app.add_handler(CallbackQueryHandler(subscription,    pattern=r"^subscription$"))
     app.add_handler(CallbackQueryHandler(buy_plan,        pattern=r"^buy_(premium|vip)$"))
